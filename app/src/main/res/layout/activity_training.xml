@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="24dp">
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="تدريب النموذج" android:textSize="22sp" android:textStyle="bold" android:layout_marginBottom="16dp"/>
-        <Button android:id="@+id/btnTrainRandom" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="تدريب 10,000 مثال مولد"/>
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginVertical="20dp" android:background="#CCCCCC"/>
-        <Button android:id="@+id/btnLoadFile" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="اختيار ملف تدريب (.txt)"/>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="الصيغة: معادلة أو نظام معادلتين | x,y\nمثال: 2x+3y=5;x-y=1|1.6,0.6"/>
-        <TextView android:id="@+id/textStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:textStyle="bold"/>
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="24dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="تدريب النموذج" android:textSize="22sp" android:textStyle="bold"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="التدريب المستمر يولّد معادلات جديدة تلقائيًا ولا يتوقف حتى تضغط إيقاف."/>
+        <Button android:id="@+id/btnTrainRandom" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="بدء التدريب المستمر"/>
+        <Button android:id="@+id/btnStopTraining" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="إيقاف التدريب" android:enabled="false"/>
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="20dp" android:background="#CCCCCC"/>
+        <Button android:id="@+id/btnLoadFile" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="اختيار ملف تدريب (.txt)"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="الصيغة: معادلة أو نظام معادلتين | x,y"/>
+        <TextView android:id="@+id/textStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:textStyle="bold"/>
+        <com.example.equationsolver.LossChartView android:id="@+id/lossChart" android:layout_width="match_parent" android:layout_height="260dp" android:layout_marginTop="16dp"/>
     </LinearLayout>
 </ScrollView>
