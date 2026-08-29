@@ -71,7 +71,7 @@ object UniversalEquationSolver {
     }
 
     private fun solveSingle(p: Polynomial): Result {
-        if (abs(p.y) > EPS && abs(p.x) > EPS) {
+        if (abs(p.y) > EPS && (abs(p.x) > EPS || abs(p.x2) > EPS)) {
             return Result("غير مدعوم", "المعادلة تحتوي x و y معًا؛ أدخل معادلتين خطيتين للنظام.", listOf("اكتب معادلتين مفصولتين بـ ';'."), exact = false)
         }
         val variable = if (abs(p.x) > EPS || abs(p.x2) > EPS) 'x' else 'y'
@@ -142,7 +142,8 @@ object UniversalEquationSolver {
             .replace("²", "^2").lowercase()
         require(s.isNotEmpty()) { "طرف المعادلة فارغ" }
         if (!s.startsWith("+") && !s.startsWith("-")) s = "+$s"
-        val terms = Regex("[+-][^+-]+?").findAll(s).map { it.value }.toList()
+        val terms = Regex("[+-][^+-]+").findAll(s).map { it.value }.toList()
+        require(terms.isNotEmpty()) { "لا توجد حدود صالحة" }
         var x2 = 0.0
         var x = 0.0
         var y = 0.0
