@@ -3,6 +3,7 @@ package com.example.equationsolver.ai
 import com.example.equationsolver.core.EquationFeatures
 import com.example.equationsolver.core.UniversalEquationSolver
 import com.example.equationsolver.data.EquationGenerator
+import com.example.equationsolver.data.GeneratedEquationValidator
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 
@@ -30,6 +31,7 @@ object TrainingEngine {
 
         while (currentCoroutineContext().isActive) {
             val sample = EquationGenerator.generate()
+            if (!GeneratedEquationValidator.isValid(sample)) continue
             val result = UniversalEquationSolver.solve(sample.equation)
             val target = solutionVector(result) ?: continue
             inputs += EquationFeatures.fromInput(sample.equation).values
@@ -55,6 +57,7 @@ object TrainingEngine {
         val targets = ArrayList<DoubleArray>(BATCH_SIZE)
         for (i in 1..samples) {
             val sample = EquationGenerator.generate()
+            if (!GeneratedEquationValidator.isValid(sample)) continue
             val result = UniversalEquationSolver.solve(sample.equation)
             val target = solutionVector(result) ?: continue
             inputs += EquationFeatures.fromInput(sample.equation).values
@@ -62,8 +65,7 @@ object TrainingEngine {
             if (inputs.size == BATCH_SIZE || i == samples) {
                 val loss = ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.001)
                 lossProgress(loss)
-                inputs.clear()
-                targets.clear()
+                inputs.clear(); targets.clear()
             }
             if (i % 500 == 0) progress(i)
         }
@@ -97,9 +99,12 @@ object TrainingEngine {
     private fun validationOnFreshRandomSet(size: Int): Double {
         val inputs = ArrayList<DoubleArray>(size)
         val targets = ArrayList<DoubleArray>(size)
-        repeat(size) {
+        var attempts = 0
+        while (inputs.size < size && attempts < size * 4) {
+            attempts++
             val sample = EquationGenerator.generate()
-            val target = solutionVector(UniversalEquationSolver.solve(sample.equation)) ?: return@repeat
+            if (!GeneratedEquationValidator.isValid(sample)) continue
+            val target = solutionVector(UniversalEquationSolver.solve(sample.equation)) ?: continue
             inputs += EquationFeatures.fromInput(sample.equation).values
             targets += target
         }
