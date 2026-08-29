@@ -7,7 +7,6 @@ import android.content.Intent
 class TrainingStopReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != TrainingService.ACTION_STOP) return
-        ModelManager.setTrainingEnabled(context, false)
-        context.stopService(Intent(context, TrainingService::class.java))
+        context.startService(Intent(context, TrainingService::class.java).setAction(TrainingService.ACTION_STOP))
     }
 }
