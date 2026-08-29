@@ -34,60 +34,97 @@ class NeuralNetwork(
 
     fun predict(input: DoubleArray): DoubleArray {
         require(input.size == inputSize) { "حجم الإدخال غير صحيح" }
-        var activation = input.copyOf()
-        for (l in weights.indices) {
-            val out = DoubleArray(biases[l].size)
-            for (j in out.indices) {
-                var sum = biases[l][j]
-                for (i in activation.indices) sum += activation[i] * weights[l][i][j]
-                out[j] = if (l < weights.lastIndex) max(0.0, sum) else sum
-            }
-            activation = out
-        }
-        return activation
+        return forwardWithCache(input).first
     }
 
-    fun train(input: DoubleArray, target: DoubleArray, learningRate: Double = 0.001) {
-        require(input.size == inputSize && target.size == outputSize) { "أبعاد التدريب غير صحيحة" }
+    private fun forwardWithCache(input: DoubleArray): Pair<DoubleArray, Pair<Array<DoubleArray>, Array<DoubleArray>>> {
+        var activation = input.copyOf()
         val activations = Array(weights.size + 1) { DoubleArray(0) }
         val preActivations = Array(weights.size) { DoubleArray(0) }
-        activations[0] = input.copyOf()
+        activations[0] = activation
         for (l in weights.indices) {
             val z = DoubleArray(biases[l].size)
             for (j in z.indices) {
                 var sum = biases[l][j]
-                for (i in activations[l].indices) sum += activations[l][i] * weights[l][i][j]
+                for (i in activation.indices) sum += activation[i] * weights[l][i][j]
                 z[j] = sum
             }
             preActivations[l] = z
-            activations[l + 1] = DoubleArray(z.size) { j -> if (l < weights.lastIndex) max(0.0, z[j]) else z[j] }
+            activation = DoubleArray(z.size) { j ->
+                if (l < weights.lastIndex) max(0.0, z[j]) else z[j]
+            }
+            activations[l + 1] = activation
         }
+        return activation to (activations to preActivations)
+    }
 
-        val deltas = Array(weights.size) { DoubleArray(0) }
-        deltas[weights.lastIndex] = DoubleArray(outputSize) { j -> activations.last()[j] - target[j] }
-        for (l in weights.lastIndex - 1 downTo 0) {
-            deltas[l] = DoubleArray(weights[l][0].size) { i ->
-                var sum = 0.0
-                for (j in deltas[l + 1].indices) sum += weights[l + 1][i][j] * deltas[l + 1][j]
-                if (preActivations[l][i] > 0.0) sum else 0.0
+    fun train(input: DoubleArray, target: DoubleArray, learningRate: Double = 0.001) {
+        trainBatch(arrayOf(input), arrayOf(target), learningRate)
+    }
+
+    /**
+     * Mini-batch Adam update. Gradients are averaged over the complete batch
+     * before updating the parameters, giving a much more stable update than
+     * performing one Adam update per example.
+     */
+    fun trainBatch(inputs: Array<DoubleArray>, targets: Array<DoubleArray>, learningRate: Double = 0.001) {
+        require(inputs.isNotEmpty() && inputs.size == targets.size) { "دفعة التدريب غير صحيحة" }
+
+        val gradW = weights.map { layer -> Array(layer.size) { DoubleArray(layer[0].size) } }
+        val gradB = biases.map { DoubleArray(it.size) }
+
+        for (sample in inputs.indices) {
+            require(inputs[sample].size == inputSize && targets[sample].size == outputSize) {
+                "أبعاد التدريب غير صحيحة"
+            }
+
+            val (_, cache) = forwardWithCache(inputs[sample])
+            val activations = cache.first
+            val preActivations = cache.second
+            val deltas = Array(weights.size) { DoubleArray(0) }
+
+            deltas[weights.lastIndex] =
+                DoubleArray(outputSize) { j -> activations.last()[j] - targets[sample][j] }
+
+            for (l in weights.lastIndex - 1 downTo 0) {
+                deltas[l] = DoubleArray(weights[l][0].size) { i ->
+                    var sum = 0.0
+                    for (j in deltas[l + 1].indices) {
+                        sum += weights[l + 1][i][j] * deltas[l + 1][j]
+                    }
+                    if (preActivations[l][i] > 0.0) sum else 0.0
+                }
+            }
+
+            for (l in weights.indices) {
+                for (i in weights[l].indices) {
+                    for (j in weights[l][i].indices) {
+                        gradW[l][i][j] += deltas[l][j] * activations[l][i]
+                    }
+                }
+                for (j in biases[l].indices) gradB[l][j] += deltas[l][j]
             }
         }
 
+        val invBatch = 1.0 / inputs.size
         step++
         val beta1 = 0.9
         val beta2 = 0.999
         val epsilon = 1e-8
+
         for (l in weights.indices) {
-            for (i in weights[l].indices) for (j in weights[l][i].indices) {
-                val g = deltas[l][j] * activations[l][i]
-                mW[l][i][j] = beta1 * mW[l][i][j] + (1 - beta1) * g
-                vW[l][i][j] = beta2 * vW[l][i][j] + (1 - beta2) * g * g
-                val mh = mW[l][i][j] / (1 - beta1.pow(step))
-                val vh = vW[l][i][j] / (1 - beta2.pow(step))
-                weights[l][i][j] -= learningRate * mh / (sqrt(vh) + epsilon)
+            for (i in weights[l].indices) {
+                for (j in weights[l][i].indices) {
+                    val g = gradW[l][i][j] * invBatch
+                    mW[l][i][j] = beta1 * mW[l][i][j] + (1 - beta1) * g
+                    vW[l][i][j] = beta2 * vW[l][i][j] + (1 - beta2) * g * g
+                    val mh = mW[l][i][j] / (1 - beta1.pow(step))
+                    val vh = vW[l][i][j] / (1 - beta2.pow(step))
+                    weights[l][i][j] -= learningRate * mh / (sqrt(vh) + epsilon)
+                }
             }
             for (j in biases[l].indices) {
-                val g = deltas[l][j]
+                val g = gradB[l][j] * invBatch
                 mB[l][j] = beta1 * mB[l][j] + (1 - beta1) * g
                 vB[l][j] = beta2 * vB[l][j] + (1 - beta2) * g * g
                 val mh = mB[l][j] / (1 - beta1.pow(step))
@@ -95,6 +132,20 @@ class NeuralNetwork(
                 biases[l][j] -= learningRate * mh / (sqrt(vh) + epsilon)
             }
         }
+    }
+
+    fun meanSquaredError(inputs: List<DoubleArray>, targets: List<DoubleArray>): Double {
+        if (inputs.isEmpty()) return 0.0
+        require(inputs.size == targets.size) { "بيانات التحقق غير متطابقة" }
+        var total = 0.0
+        for (i in inputs.indices) {
+            val prediction = predict(inputs[i])
+            for (j in prediction.indices) {
+                val error = prediction[j] - targets[i][j]
+                total += error * error
+            }
+        }
+        return total / (inputs.size * outputSize)
     }
 
     fun getWeights(): List<Array<DoubleArray>> = weights
