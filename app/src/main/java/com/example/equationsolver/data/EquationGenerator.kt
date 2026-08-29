@@ -1,21 +1,33 @@
 package com.example.equationsolver.data
 
+import kotlin.math.abs
 import kotlin.random.Random
 
 data class GeneratedExample(val equation: String, val x: Double, val y: Double)
 
 object EquationGenerator {
-    fun generate(): GeneratedExample {
-        return if (Random.nextBoolean()) generateSingle() else generateSystem()
+    fun generate(): GeneratedExample = when (Random.nextInt(100)) {
+        in 0..49 -> generateSingleLinear()
+        in 50..74 -> generateQuadratic()
+        else -> generateSystem()
     }
 
-    private fun generateSingle(): GeneratedExample {
-        var a: Int
-        do { a = Random.nextInt(1, 11) } while (a == 0)
-        val x = Random.nextInt(-20, 21).toDouble() / Random.nextInt(1, 5)
+    private fun generateSingleLinear(): GeneratedExample {
+        val a = Random.nextInt(1, 11)
+        val x = Random.nextInt(-40, 41).toDouble() / Random.nextInt(1, 5)
         val b = Random.nextInt(-20, 21)
         val c = a * x + b
-        return "${a}x${if (b >= 0) "+$b" else b}=${fmt(c)}".let { GeneratedExample(it, x, 0.0) }
+        return GeneratedExample("${a}x${if (b >= 0) "+$b" else b}=${fmt(c)}", x, 0.0)
+    }
+
+    private fun generateQuadratic(): GeneratedExample {
+        val r1 = Random.nextInt(-12, 13).toDouble()
+        val r2 = Random.nextInt(-12, 13).toDouble()
+        val a = Random.nextInt(1, 6).toDouble()
+        val b = -a * (r1 + r2)
+        val c = a * r1 * r2
+        val equation = "${fmt(a)}x^2${signed(b)}x${signed(c)}=0"
+        return GeneratedExample(equation, r1, 0.0)
     }
 
     private fun generateSystem(): GeneratedExample {
@@ -38,10 +50,14 @@ object EquationGenerator {
 
     private fun term(coef: Int, variable: Char, appendSign: Boolean = false): String {
         val sign = if (coef < 0) "-" else if (appendSign) "+" else ""
-        val abs = kotlin.math.abs(coef)
-        val number = if (abs == 1) "" else abs.toString()
+        val magnitude = abs(coef)
+        val number = if (magnitude == 1) "" else magnitude.toString()
         return "$sign$number$variable"
     }
 
-    private fun fmt(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else "%.4f".format(value)
+    private fun signed(value: Double): String = if (value >= 0) "+${fmt(value)}" else fmt(value)
+
+    private fun fmt(value: Double): String =
+        if (abs(value - value.toInt()) < 1e-10) value.toInt().toString()
+        else "%.4f".format(value)
 }
