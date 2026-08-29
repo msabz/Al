@@ -3,7 +3,6 @@ package com.example.equationsolver.ai
 import android.content.Context
 import android.os.BatteryManager
 import android.os.PowerManager
-import android.os.ThermalStatus
 import com.example.equationsolver.core.EquationFeatures
 import com.example.equationsolver.core.UniversalEquationSolver
 import com.example.equationsolver.data.EquationGenerator
@@ -61,7 +60,6 @@ object TrainingEngine {
         val level = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         if (level in 0..15) return "البطارية منخفضة ($level%)"
         val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (android.os.Build.VERSION.SDK_INT >= 29 && power.currentThermalStatus >= ThermalStatus.STATUS_SEVERE) return "حرارة الجهاز مرتفعة"
         if (power.isPowerSaveMode && level <= 25) return "وضع توفير الطاقة فعال"
         return null
     }
