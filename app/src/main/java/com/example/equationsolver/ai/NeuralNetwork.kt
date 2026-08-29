@@ -50,57 +50,42 @@ class NeuralNetwork(
                 z[j] = sum
             }
             preActivations[l] = z
-            activation = DoubleArray(z.size) { j ->
-                if (l < weights.lastIndex) max(0.0, z[j]) else z[j]
-            }
+            activation = DoubleArray(z.size) { j -> if (l < weights.lastIndex) max(0.0, z[j]) else z[j] }
             activations[l + 1] = activation
         }
         return activation to (activations to preActivations)
     }
 
-    fun train(input: DoubleArray, target: DoubleArray, learningRate: Double = 0.001) {
+    fun train(input: DoubleArray, target: DoubleArray, learningRate: Double = 0.001): Double =
         trainBatch(arrayOf(input), arrayOf(target), learningRate)
-    }
 
-    /**
-     * Mini-batch Adam update. Gradients are averaged over the complete batch
-     * before updating the parameters, giving a much more stable update than
-     * performing one Adam update per example.
-     */
-    fun trainBatch(inputs: Array<DoubleArray>, targets: Array<DoubleArray>, learningRate: Double = 0.001) {
+    fun trainBatch(inputs: Array<DoubleArray>, targets: Array<DoubleArray>, learningRate: Double = 0.001): Double {
         require(inputs.isNotEmpty() && inputs.size == targets.size) { "دفعة التدريب غير صحيحة" }
-
         val gradW = weights.map { layer -> Array(layer.size) { DoubleArray(layer[0].size) } }
         val gradB = biases.map { DoubleArray(it.size) }
+        var loss = 0.0
 
         for (sample in inputs.indices) {
-            require(inputs[sample].size == inputSize && targets[sample].size == outputSize) {
-                "أبعاد التدريب غير صحيحة"
-            }
-
-            val (_, cache) = forwardWithCache(inputs[sample])
+            require(inputs[sample].size == inputSize && targets[sample].size == outputSize) { "أبعاد التدريب غير صحيحة" }
+            val (prediction, cache) = forwardWithCache(inputs[sample])
             val activations = cache.first
             val preActivations = cache.second
+            for (j in prediction.indices) {
+                val error = prediction[j] - targets[sample][j]
+                loss += error * error
+            }
             val deltas = Array(weights.size) { DoubleArray(0) }
-
-            deltas[weights.lastIndex] =
-                DoubleArray(outputSize) { j -> activations.last()[j] - targets[sample][j] }
-
+            deltas[weights.lastIndex] = DoubleArray(outputSize) { j -> prediction[j] - targets[sample][j] }
             for (l in weights.lastIndex - 1 downTo 0) {
                 deltas[l] = DoubleArray(weights[l][0].size) { i ->
                     var sum = 0.0
-                    for (j in deltas[l + 1].indices) {
-                        sum += weights[l + 1][i][j] * deltas[l + 1][j]
-                    }
+                    for (j in deltas[l + 1].indices) sum += weights[l + 1][i][j] * deltas[l + 1][j]
                     if (preActivations[l][i] > 0.0) sum else 0.0
                 }
             }
-
             for (l in weights.indices) {
-                for (i in weights[l].indices) {
-                    for (j in weights[l][i].indices) {
-                        gradW[l][i][j] += deltas[l][j] * activations[l][i]
-                    }
+                for (i in weights[l].indices) for (j in weights[l][i].indices) {
+                    gradW[l][i][j] += deltas[l][j] * activations[l][i]
                 }
                 for (j in biases[l].indices) gradB[l][j] += deltas[l][j]
             }
@@ -111,17 +96,14 @@ class NeuralNetwork(
         val beta1 = 0.9
         val beta2 = 0.999
         val epsilon = 1e-8
-
         for (l in weights.indices) {
-            for (i in weights[l].indices) {
-                for (j in weights[l][i].indices) {
-                    val g = gradW[l][i][j] * invBatch
-                    mW[l][i][j] = beta1 * mW[l][i][j] + (1 - beta1) * g
-                    vW[l][i][j] = beta2 * vW[l][i][j] + (1 - beta2) * g * g
-                    val mh = mW[l][i][j] / (1 - beta1.pow(step))
-                    val vh = vW[l][i][j] / (1 - beta2.pow(step))
-                    weights[l][i][j] -= learningRate * mh / (sqrt(vh) + epsilon)
-                }
+            for (i in weights[l].indices) for (j in weights[l][i].indices) {
+                val g = gradW[l][i][j] * invBatch
+                mW[l][i][j] = beta1 * mW[l][i][j] + (1 - beta1) * g
+                vW[l][i][j] = beta2 * vW[l][i][j] + (1 - beta2) * g * g
+                val mh = mW[l][i][j] / (1 - beta1.pow(step))
+                val vh = vW[l][i][j] / (1 - beta2.pow(step))
+                weights[l][i][j] -= learningRate * mh / (sqrt(vh) + epsilon)
             }
             for (j in biases[l].indices) {
                 val g = gradB[l][j] * invBatch
@@ -132,6 +114,7 @@ class NeuralNetwork(
                 biases[l][j] -= learningRate * mh / (sqrt(vh) + epsilon)
             }
         }
+        return loss / (inputs.size * outputSize)
     }
 
     fun meanSquaredError(inputs: List<DoubleArray>, targets: List<DoubleArray>): Double {
