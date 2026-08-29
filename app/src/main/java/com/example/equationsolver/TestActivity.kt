@@ -7,6 +7,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.example.equationsolver.ai.ModelManager
+import com.example.equationsolver.core.ArabicEquationNormalizer
 import com.example.equationsolver.core.UniversalEquationSolver
 import java.util.Locale
 import kotlin.math.abs
@@ -40,16 +41,17 @@ class TestActivity : AppCompatActivity() {
         }
 
         solveButton.setOnClickListener {
-            val equation = input.text.toString().trim()
-            if (equation.isEmpty()) {
+            val raw = input.text.toString().trim()
+            if (raw.isEmpty()) {
                 input.error = "أدخل معادلة أولاً"
                 input.requestFocus()
                 Toast.makeText(this, "أدخل معادلة للحل", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            val equation = ArabicEquationNormalizer.normalize(raw)
             try {
-                typeText.text = "نوع المسألة: ${UniversalEquationSolver.equationType(equation)}"
                 val result = UniversalEquationSolver.solve(equation)
+                typeText.text = "نوع المسألة: ${UniversalEquationSolver.equationType(equation)}"
                 exactText.text = "الحل الدقيق:\n${result.summary}"
                 stepsText.text = "خطوات الحل:\n" + result.steps.mapIndexed { i, step -> "${i + 1}. $step" }.joinToString("\n")
 
@@ -58,9 +60,10 @@ class TestActivity : AppCompatActivity() {
                     val px = prediction.getOrNull(0)?.times(100.0)
                     val py = prediction.getOrNull(1)?.times(100.0)
                     aiText.text = when {
-                        px == null -> "تقدير AI غير متاح"
-                        py != null && abs(py) >= 1e-9 -> "تقدير AI:\nx ≈ ${fmt(px)}\ny ≈ ${fmt(py)}"
-                        else -> "تقدير AI:\nx ≈ ${fmt(px)}"
+                        result.x != null && result.y == null && px != null -> "تقدير AI:\nx ≈ ${fmt(px)}"
+                        result.x == null && result.y != null && py != null -> "تقدير AI:\ny ≈ ${fmt(py)}"
+                        result.x != null && result.y != null && px != null && py != null -> "تقدير AI:\nx ≈ ${fmt(px)}\ny ≈ ${fmt(py)}"
+                        else -> "تقدير AI: لا توجد قيم عددية لهذه الحالة."
                     }
                 } catch (e: Exception) {
                     aiText.text = "تقدير AI غير متاح:\n${e.message ?: "خطأ غير معروف"}"
@@ -69,6 +72,7 @@ class TestActivity : AppCompatActivity() {
                 typeText.text = ""
                 exactText.text = "تعذر حل المعادلة:\n${e.message ?: "خطأ غير معروف"}"
                 stepsText.text = ""
+                aiText.text = ""
             }
         }
     }
