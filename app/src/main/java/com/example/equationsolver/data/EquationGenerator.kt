@@ -26,8 +26,7 @@ object EquationGenerator {
         val a = Random.nextInt(1, 6).toDouble()
         val b = -a * (r1 + r2)
         val c = a * r1 * r2
-        val equation = "${fmt(a)}x^2${signed(b)}x${signed(c)}=0"
-        return GeneratedExample(equation, r1, 0.0)
+        return GeneratedExample("${fmt(a)}x^2${signed(b)}x${signed(c)}=0", r1, 0.0)
     }
 
     private fun generateSystem(): GeneratedExample {
@@ -42,9 +41,7 @@ object EquationGenerator {
             val y = Random.nextInt(-10, 11).toDouble()
             val c1 = a1 * x + b1 * y
             val c2 = a2 * x + b2 * y
-            val eq1 = "${term(a1, 'x')}${term(b1, 'y', true)}=${fmt(c1)}"
-            val eq2 = "${term(a2, 'x')}${term(b2, 'y', true)}=${fmt(c2)}"
-            return GeneratedExample("$eq1;$eq2", x, y)
+            return GeneratedExample("${term(a1, 'x')}${term(b1, 'y', true)}=${fmt(c1)};${term(a2, 'x')}${term(b2, 'y', true)}=${fmt(c2)}", x, y)
         }
     }
 
@@ -56,8 +53,5 @@ object EquationGenerator {
     }
 
     private fun signed(value: Double): String = if (value >= 0) "+${fmt(value)}" else fmt(value)
-
-    private fun fmt(value: Double): String =
-        if (abs(value - value.toInt()) < 1e-10) value.toInt().toString()
-        else "%.4f".format(value)
+    private fun fmt(value: Double): String = if (abs(value - value.toInt()) < 1e-10) value.toInt().toString() else "%.4f".format(value)
 }
