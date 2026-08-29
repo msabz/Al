@@ -25,14 +25,28 @@ class TrainingActivity : AppCompatActivity() {
         status = findViewById(R.id.textStatus)
         randomButton = findViewById(R.id.btnTrainRandom)
         fileButton = findViewById(R.id.btnLoadFile)
+
         randomButton.setOnClickListener {
             setBusy(true)
             scope.launch {
-                TrainingEngine.trainRandom(10_000) { n -> launch(Dispatchers.Main) { status.text = "تم تدريب $n مثال..." } }
-                ModelManager.save(this@TrainingActivity)
-                withContext(Dispatchers.Main) { status.text = "اكتمل التدريب وحُفظ النموذج."; setBusy(false) }
+                try {
+                    TrainingEngine.trainRandom(10_000) { n ->
+                        launch(Dispatchers.Main) { status.text = "تم تدريب $n مثال..." }
+                    }
+                    ModelManager.save(this@TrainingActivity)
+                    withContext(Dispatchers.Main) {
+                        status.text = "اكتمل تدريب 10,000 مثال وحُفظ النموذج."
+                        setBusy(false)
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        status.text = "خطأ: ${e.message}"
+                        setBusy(false)
+                    }
+                }
             }
         }
+
         fileButton.setOnClickListener { picker.launch("text/plain") }
     }
 
@@ -56,12 +70,32 @@ class TrainingActivity : AppCompatActivity() {
                         }
                     }
                 }
+
                 if (examples.isEmpty()) error("الملف فارغ أو الصيغة غير صحيحة")
-                TrainingEngine.trainFile(examples) { n -> launch(Dispatchers.Main) { status.text = "تمت معالجة $n مثال..." } }
+
+                withContext(Dispatchers.Main) {
+                    status.text = "تمت قراءة ${examples.size} مثال. بدء التدريب..."
+                }
+
+                TrainingEngine.trainFile(examples) { n ->
+                    launch(Dispatchers.Main) {
+                        status.text = "تقدم التدريب: $n مثال معالجة عبر العصور..."
+                    }
+                }
+
                 ModelManager.save(this@TrainingActivity)
-                withContext(Dispatchers.Main) { status.text = "تم تدريب ${examples.size} مثال وحفظ النموذج."; setBusy(false) }
+                val mse = TrainingEngine.lastValidationMse
+                withContext(Dispatchers.Main) {
+                    status.text = "اكتمل التدريب: ${examples.size} مثال\n" +
+                        "Mini-batch=${TrainingEngine.BATCH_SIZE} | Epochs=${TrainingEngine.EPOCHS}\n" +
+                        "Validation MSE: %.6f\nتم حفظ النموذج.".format(mse)
+                    setBusy(false)
+                }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { status.text = "خطأ: ${e.message}"; setBusy(false) }
+                withContext(Dispatchers.Main) {
+                    status.text = "خطأ: ${e.message}"
+                    setBusy(false)
+                }
             }
         }
     }
