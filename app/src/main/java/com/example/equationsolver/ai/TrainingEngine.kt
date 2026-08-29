@@ -1,8 +1,7 @@
 package com.example.equationsolver.ai
 
 import com.example.equationsolver.core.EquationFeatures
-import com.example.equationsolver.core.ExactSolver
-import com.example.equationsolver.core.SolutionResult
+import com.example.equationsolver.core.UniversalEquationSolver
 import com.example.equationsolver.data.EquationGenerator
 import kotlin.random.Random
 
@@ -16,17 +15,14 @@ object TrainingEngine {
         private set
 
     fun trainRandom(samples: Int, progress: (Int) -> Unit = {}) {
-        val solver = ExactSolver()
         val inputs = ArrayList<DoubleArray>(BATCH_SIZE)
         val targets = ArrayList<DoubleArray>(BATCH_SIZE)
-
         for (i in 1..samples) {
             val sample = EquationGenerator.generate()
-            val result = solver.solve(sample.equation)
+            val result = UniversalEquationSolver.solve(sample.equation)
             val target = solutionVector(result) ?: continue
             inputs += EquationFeatures.fromInput(sample.equation).values
             targets += target
-
             if (inputs.size == BATCH_SIZE || i == samples) {
                 ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.001)
                 inputs.clear()
@@ -38,52 +34,37 @@ object TrainingEngine {
 
     fun trainFile(examples: List<Pair<String, DoubleArray>>, progress: (Int) -> Unit = {}) {
         if (examples.isEmpty()) return
-
-        // Shuffle indices instead of copying/shuffling the million-example list itself.
         val indices = IntArray(examples.size) { it }
         indices.shuffle(Random.Default)
         val validationCount = maxOf(1, (examples.size * VALIDATION_RATIO).toInt())
         val trainCount = examples.size - validationCount
-        val solver = ExactSolver()
 
         repeat(EPOCHS) { epoch ->
             val inputs = ArrayList<DoubleArray>(BATCH_SIZE)
             val targets = ArrayList<DoubleArray>(BATCH_SIZE)
-
             for (position in 0 until trainCount) {
                 val pair = examples[indices[position]]
-                val result = solver.solve(pair.first)
+                val result = UniversalEquationSolver.solve(pair.first)
                 val target = solutionVector(result) ?: suppliedTarget(pair.second)
-
                 inputs += EquationFeatures.fromInput(pair.first).values
                 targets += target
-
                 if (inputs.size == BATCH_SIZE || position == trainCount - 1) {
                     ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.001)
                     inputs.clear()
                     targets.clear()
                 }
-
-                if ((position + 1) % 1000 == 0) {
-                    progress(epoch * trainCount + position + 1)
-                }
+                if ((position + 1) % 1000 == 0) progress(epoch * trainCount + position + 1)
             }
-
-            lastValidationMse = validationMse(examples, indices, trainCount, solver)
+            lastValidationMse = validationMse(examples, indices, trainCount)
         }
     }
 
-    private fun validationMse(
-        examples: List<Pair<String, DoubleArray>>,
-        indices: IntArray,
-        start: Int,
-        solver: ExactSolver
-    ): Double {
+    private fun validationMse(examples: List<Pair<String, DoubleArray>>, indices: IntArray, start: Int): Double {
         var total = 0.0
         var count = 0
         for (position in start until indices.size) {
             val pair = examples[indices[position]]
-            val result = solver.solve(pair.first)
+            val result = UniversalEquationSolver.solve(pair.first)
             val target = solutionVector(result) ?: suppliedTarget(pair.second)
             val prediction = ModelManager.nn.predict(EquationFeatures.fromInput(pair.first).values)
             for (j in prediction.indices) {
@@ -95,18 +76,13 @@ object TrainingEngine {
         return if (count == 0) 0.0 else total / (count * 2.0)
     }
 
-    private fun suppliedTarget(values: DoubleArray): DoubleArray {
-        return doubleArrayOf(
-            values.getOrElse(0) { 0.0 } / 100.0,
-            values.getOrElse(1) { 0.0 } / 100.0
-        )
-    }
+    private fun suppliedTarget(values: DoubleArray) = doubleArrayOf(
+        values.getOrElse(0) { 0.0 } / 100.0,
+        values.getOrElse(1) { 0.0 } / 100.0
+    )
 
-    private fun solutionVector(result: SolutionResult): DoubleArray? {
-        return when (result) {
-            is SolutionResult.SingleVariable -> doubleArrayOf(result.x / 100.0, 0.0)
-            is SolutionResult.TwoVariables -> doubleArrayOf(result.x / 100.0, result.y / 100.0)
-            else -> null
-        }
+    private fun solutionVector(result: UniversalEquationSolver.Result): DoubleArray? {
+        val x = result.x ?: return null
+        return doubleArrayOf(x / 100.0, (result.y ?: 0.0) / 100.0)
     }
 }

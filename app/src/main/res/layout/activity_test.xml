@@ -13,7 +13,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="حل معادلة"
+            android:text="المحلل الرياضي الذكي"
             android:textSize="24sp"
             android:textStyle="bold" />
 
@@ -21,7 +21,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="عدّل المعادلة ثم اضغط حل بدقة. افصل معادلتين بـ ;"
+            android:text="اكتب معادلة خطية أو تربيعية، أو معادلتين خطيتين مفصولتين بـ ;"
             android:textSize="15sp" />
 
         <EditText
@@ -30,6 +30,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:gravity="start|top"
+            android:hint="مثال: x^2-5x+6=0"
             android:inputType="text|textNoSuggestions"
             android:minHeight="64dp"
             android:padding="12dp"
@@ -48,7 +49,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="حل بدقة" />
+                android:text="حل" />
 
             <Button
                 android:id="@+id/btnClear"
@@ -60,20 +61,33 @@
         </LinearLayout>
 
         <TextView
+            android:id="@+id/textType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
             android:id="@+id/textResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text=""
+            android:layout_marginTop="12dp"
             android:textSize="19sp"
             android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textSteps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textSize="16sp" />
 
         <TextView
             android:id="@+id/textAi"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text=""
+            android:layout_marginTop="18dp"
             android:textSize="16sp" />
 
     </LinearLayout>
