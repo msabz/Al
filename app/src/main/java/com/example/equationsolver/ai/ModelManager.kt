@@ -57,15 +57,28 @@ object ModelManager {
         val app = context.applicationContext
         val target = app.getFileStreamPath(MODEL_FILE)
         val temp = app.getFileStreamPath("$MODEL_FILE.tmp")
+        val backup = app.getFileStreamPath("$MODEL_FILE.bak")
+
+        temp.delete()
+        DataOutputStream(BufferedOutputStream(FileOutputStream(temp))).use { nn.saveState(it) }
+
+        var oldMoved = false
         try {
-            DataOutputStream(BufferedOutputStream(FileOutputStream(temp))).use { nn.saveState(it) }
-            if (target.exists() && !target.delete()) throw IllegalStateException("تعذر استبدال النموذج القديم")
+            if (backup.exists()) backup.delete()
+            if (target.exists()) {
+                if (!target.renameTo(backup)) throw IllegalStateException("تعذر إنشاء نسخة احتياطية من النموذج")
+                oldMoved = true
+            }
+
             if (!temp.renameTo(target)) {
                 FileInputStream(temp).use { input -> FileOutputStream(target).use { output -> input.copyTo(output) } }
                 temp.delete()
             }
+            if (oldMoved) backup.delete()
         } catch (e: Exception) {
             temp.delete()
+            if (target.exists()) target.delete()
+            if (oldMoved && backup.exists()) backup.renameTo(target)
             throw e
         }
 
@@ -97,8 +110,9 @@ object ModelManager {
         try {
             DataInputStream(BufferedInputStream(FileInputStream(file))).use { nn.loadState(it) }
         } catch (_: Exception) {
-            // Keep the new random model if a previous checkpoint is incompatible/corrupt.
-            file.renameTo(context.getFileStreamPath("$MODEL_FILE.corrupt"))
+            val corrupt = context.getFileStreamPath("$MODEL_FILE.corrupt")
+            corrupt.delete()
+            file.renameTo(corrupt)
         }
     }
 }
