@@ -1,11 +1,6 @@
 name: Kaggle GPU Train v5
 
 on:
-  push:
-    branches: ["feat/v5-deepmind-colab"]
-    paths:
-      - "kaggle/kaggle_train.py"
-      - ".github/workflows/kaggle-train.yml"
   workflow_dispatch:
 
 concurrency:
