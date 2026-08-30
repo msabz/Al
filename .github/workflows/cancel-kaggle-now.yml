@@ -13,12 +13,11 @@ jobs:
   cancel:
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel active/restarted Kaggle workflows
+      - name: Cancel current Kaggle workflow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for run_id in 33324316841 33325786190; do
-            echo "Cancelling run ${run_id}"
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" || true
-          done
+          run_id=33328801058
+          echo "Cancelling run ${run_id}"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" || true
