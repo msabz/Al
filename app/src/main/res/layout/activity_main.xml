@@ -15,150 +15,40 @@
         android:paddingEnd="18dp"
         android:paddingBottom="32dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_chip"
-            android:fontFamily="sans-serif-medium"
-            android:text="@string/neural_only_badge"
-            android:textColor="@color/mint"
-            android:textSize="11sp"
-            android:textStyle="bold" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/bg_chip" android:fontFamily="sans-serif-medium" android:text="V5 • STRUCTURAL RPN • 5 ROOT SLOTS" android:textColor="@color/mint" android:textSize="11sp" android:textStyle="bold" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Math AI Lab v5" android:textColor="@color/text_primary" android:textDirection="rtl" android:textSize="30sp" android:textStyle="bold" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="3dp" android:text="تدريب عصبي حقيقي على المعادلات • RPN بنيوي • أوزان MAI5 قابلة للنقل بين Colab والهاتف" android:textColor="@color/text_secondary" android:textDirection="rtl" android:textSize="15sp" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/dashboard_title"
-            android:textColor="@color/text_primary"
-            android:textDirection="rtl"
-            android:textSize="30sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:lineSpacingExtra="3dp"
-            android:text="@string/dashboard_subtitle"
-            android:textColor="@color/text_secondary"
-            android:textDirection="rtl"
-            android:textSize="15sp" />
-
-        <com.google.android.material.card.MaterialCardView
-            style="@style/Card.MathAI"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="18dp">
-
-                <TextView
-                    android:id="@+id/textTrainingState"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="النموذج جاهز"
-                    android:textColor="@color/mint"
-                    android:textDirection="rtl"
-                    android:textSize="17sp"
-                    android:textStyle="bold" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:baselineAligned="false"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="6dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_stat"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
+        <com.google.android.material.card.MaterialCardView style="@style/Card.MathAI" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="18dp">
+                <TextView android:id="@+id/textTrainingState" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="النموذج جاهز" android:textColor="@color/mint" android:textDirection="rtl" android:textSize="17sp" android:textStyle="bold" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:baselineAligned="false" android:orientation="horizontal">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginEnd="6dp" android:layout_weight="1" android:background="@drawable/bg_stat" android:gravity="center" android:orientation="vertical" android:padding="12dp">
                         <TextView android:id="@+id/textMainSamples" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0" android:textColor="@color/text_primary" android:textSize="19sp" android:textStyle="bold" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="معادلة" android:textColor="@color/text_secondary" android:textSize="11sp" />
                     </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="3dp"
-                        android:layout_marginEnd="3dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_stat"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="3dp" android:layout_marginEnd="3dp" android:layout_weight="1" android:background="@drawable/bg_stat" android:gravity="center" android:orientation="vertical" android:padding="12dp">
                         <TextView android:id="@+id/textMainRmse" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="—" android:textColor="@color/sky" android:textSize="19sp" android:textStyle="bold" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="RMSE" android:textColor="@color/text_secondary" android:textSize="11sp" />
                     </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_stat"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_weight="1" android:background="@drawable/bg_stat" android:gravity="center" android:orientation="vertical" android:padding="12dp">
                         <TextView android:id="@+id/textMainAccuracy" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="—" android:textColor="@color/amber" android:textSize="19sp" android:textStyle="bold" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="ضمن ±1" android:textColor="@color/text_secondary" android:textSize="11sp" />
                     </LinearLayout>
                 </LinearLayout>
-
-                <TextView
-                    android:id="@+id/textModelDetails"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:lineSpacingExtra="2dp"
-                    android:textColor="@color/text_secondary"
-                    android:textDirection="rtl"
-                    android:textSize="13sp" />
+                <TextView android:id="@+id/textModelDetails" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:lineSpacingExtra="2dp" android:textColor="@color/text_secondary" android:textDirection="rtl" android:textSize="13sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnGoTrain"
-            style="@style/Button.MathAI.Primary"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:text="@string/train_model" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnGoTrain" style="@style/Button.MathAI.Primary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="22dp" android:text="تدريب النموذج" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnGoTest" style="@style/Button.MathAI.Secondary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="اختبار النموذج ومقارنة الجواب الصحيح" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnGoReinforcement" style="@style/Button.MathAI.Secondary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="تدريب موجّه" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnGoSettings" style="@style/Button.MathAI.Secondary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="الإعدادات • استيراد/تصدير MAI5" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnGoTest"
-            style="@style/Button.MathAI.Secondary"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/test_model" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnGoReinforcement"
-            style="@style/Button.MathAI.Secondary"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/guided_training" />
-
-        <com.google.android.material.card.MaterialCardView
-            style="@style/Card.MathAI"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp">
+        <com.google.android.material.card.MaterialCardView style="@style/Card.MathAI" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="22dp">
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="18dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ما الذي يتعلمه؟" android:textColor="@color/text_primary" android:textDirection="rtl" android:textSize="16sp" android:textStyle="bold" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="3dp" android:text="خطية وأنظمة 2×2، كثيرات حدود حتى الدرجة الخامسة، كسرية، جذرية، أسية، لوغاريتمية، مطلقة ومثلثية. عند تعدد الجذور يتعلم النموذج جذرًا رئيسيًا ثابتًا للمقارنة." android:textColor="@color/text_secondary" android:textDirection="rtl" android:textSize="13sp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ماذا يتعلّم v5؟" android:textColor="@color/text_primary" android:textDirection="rtl" android:textSize="16sp" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="3dp" android:text="خطية، أنظمة x/y، كثيرات حدود حتى خمسة جذور حقيقية، كسرية، جذرية، أسية، لوغاريتمية ومثلثية. يميّز أيضًا لا حل/حلول لا نهائية/غير مدعوم. الهندسة خارج المنهج." android:textColor="@color/text_secondary" android:textDirection="rtl" android:textSize="13sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
     </LinearLayout>

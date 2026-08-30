@@ -23,6 +23,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnGoTest).setOnClickListener { startActivity(Intent(this, TestActivity::class.java)) }
         findViewById<Button>(R.id.btnGoTrain).setOnClickListener { startActivity(Intent(this, TrainingActivity::class.java)) }
         findViewById<Button>(R.id.btnGoReinforcement).setOnClickListener { startActivity(Intent(this, ReinforcementActivity::class.java)) }
+        findViewById<Button>(R.id.btnGoSettings).setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
     }
 
     override fun onResume() {
@@ -37,12 +38,9 @@ class MainActivity : AppCompatActivity() {
         if (!ModelManager.isTrainingEnabled(this)) return
         val intent = Intent(this, TrainingService::class.java).setAction(TrainingService.ACTION_START)
         resumeError = try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, intent)
-            else startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, intent) else startService(intent)
             null
-        } catch (e: Exception) {
-            e.message ?: "رفض Android تشغيل خدمة التدريب"
-        }
+        } catch (e: Exception) { e.message ?: "رفض Android تشغيل خدمة التدريب" }
     }
 
     private fun renderDashboard() {
@@ -51,11 +49,7 @@ class MainActivity : AppCompatActivity() {
         val storedMse = ModelManager.lastValidationMse(this)
         val validation = snapshot.validation
         val mse = if (validation.normalizedMse.isFinite()) validation.normalizedMse else storedMse
-        val accuracy = if (validation.withinOneUnitRatio.isFinite()) {
-            validation.withinOneUnitRatio
-        } else {
-            ModelManager.lastValidationAccuracy(this)
-        }
+        val accuracy = if (validation.withinOneUnitRatio.isFinite()) validation.withinOneUnitRatio else ModelManager.lastValidationAccuracy(this)
         val info = ModelManager.modelInfo(this)
 
         findViewById<TextView>(R.id.textMainSamples).text = "%,d".format(Locale.US, samples)
@@ -65,18 +59,14 @@ class MainActivity : AppCompatActivity() {
             resumeError != null -> "تعذر استئناف الخدمة: $resumeError"
             snapshot.paused -> "متوقف مؤقتًا لحماية الهاتف: ${snapshot.reason}"
             TrainingEngine.isExternalFileSessionActive() -> "● تدريب ملف خارجي يعمل الآن"
-            ModelManager.isTrainingEnabled(this) -> "● التدريب العصبي يعمل في الخلفية"
-            samples > 0 -> "النموذج محفوظ وجاهز للمتابعة"
-            else -> "نموذج جديد — ابدأ أول جلسة تدريب"
+            ModelManager.isTrainingEnabled(this) -> "● تدريب v5 البنيوي يعمل في الخلفية"
+            samples > 0 -> "نموذج v5 محفوظ وجاهز للمتابعة"
+            else -> "نموذج v5 جديد — ابدأ التدريب أو استورد MAI5 من Colab"
         }
         val checkpoint = if (info.checkpointBytes > 0L) "%.1f MB".format(Locale.US, info.checkpointBytes / 1_048_576.0) else "غير محفوظ بعد"
+        val stateAcc = if (validation.stateAccuracy.isFinite()) " • دقة حالة الحل %.0f%%".format(Locale.US, validation.stateAccuracy * 100.0) else ""
+        val imported = if (info.importedAt > 0L) " • أوزان Colab/MAI5 مستوردة" else ""
         findViewById<TextView>(R.id.textModelDetails).text =
-            "%,d معامل قابل للتعلم • %,d خطوة Adam\nCheckpoint: %s%s".format(
-                Locale.US,
-                info.parameterCount,
-                info.optimizerStep,
-                checkpoint,
-                if (info.hasRecoveryBackup) " • نسخة استرجاع موجودة" else ""
-            )
+            "%,d معامل • %,d خطوة Adam%s\nCheckpoint: %s%s".format(Locale.US, info.parameterCount, info.optimizerStep, stateAcc, checkpoint, imported)
     }
 }
