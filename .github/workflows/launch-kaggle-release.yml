@@ -1,0 +1,67 @@
+name: Launch Reviewed Kaggle Release
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/launch-kaggle-release.yml"]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  preflight-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+
+      - name: Static release preflight
+        run: |
+          set -euo pipefail
+          python -m py_compile kaggle/kaggle_train.py
+          python - <<'PY'
+          from pathlib import Path
+
+          base = Path('colab/train_v5_deepmind.py').read_text()
+          turbo = Path('colab/turbo_train_v5.py').read_text()
+          audit = Path('colab/generalization_audit.py').read_text()
+          launcher = Path('kaggle/kaggle_train.py').read_text()
+
+          checks = {
+              'base tan ambiguity target': 'tan(x)={math.tan(root):.8g}' in base,
+              'base fixed-state target': 'z=rng.randrange(4)' in base and 'return mk("x*y=1",state=UNSUPPORTED' in base,
+              'turbo AMP target': 'assigned_vals[sysmask,:2] = systems[sysmask,:2] / ROOT_SCALE' in turbo,
+              'turbo DeepMind parser target': 'body.split(" and ")' in turbo,
+              'turbo consistency target': 'consistency = F.smooth_l1_loss(out, other_out, beta=0.1)' in turbo,
+              'turbo PoolWriter target': 'if e["equiv"] is None:' in turbo,
+              'audit DeepMind target': 'attempts < count * 100' in audit,
+              'audit consistency target': 'def consistency_audit(ns, model, examples, limit=128):' in audit,
+              'audit OOD target': 'large OOD gap: strict-OOD RMSE is' in audit,
+              'reviewed fixed batch': 'core.BATCH_SIZE = 4096' in launcher,
+              'reviewed steps': 'core.TOTAL_STEPS = 40_000' in launcher,
+              'permutation-invariant loss patch': 'ov = other_out[set_ids,:5][:,PERMS]' in launcher,
+              'held-out +37 audit': 'equivalent_add_constant(ex["eq"], 37)' in launcher,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          for name, ok in checks.items():
+              print(('OK   ' if ok else 'FAIL ') + name)
+          if failed:
+              raise SystemExit('Preflight failed: ' + ', '.join(failed))
+
+          # Contract guard: release wrapper must not edit Android model-spec files.
+          forbidden = ['V5ModelSpec.kt', 'NeuralNetwork.kt', 'ModelManager.kt']
+          for name in forbidden:
+              if name in launcher:
+                  raise SystemExit('Launcher unexpectedly references Android contract file: ' + name)
+
+          print('RELEASE_PREFLIGHT_OK')
+          PY
+
+      - name: Dispatch exactly one Kaggle release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run kaggle-train.yml --ref feat/v5-deepmind-colab
+          echo "KAGGLE_RELEASE_DISPATCHED"
