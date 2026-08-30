@@ -11,10 +11,13 @@ import java.io.DataOutputStream
 import kotlin.random.Random
 
 class NeuralNetworkTest {
-    @Test fun structuralEncoderTreatsWholeNumberAsOneNode() {
+    @Test fun linearEncoderUsesCanonicalCoefficientSlots() {
         val e = StructuralMathEncoder.encode("12.5x+4=29")
         assertEquals(EquationFamily.LINEAR, e.family)
-        assertEquals(3, e.kinds.take(e.nodeCount).count { it == StructuralMathEncoder.Kind.NUMBER })
+        assertEquals(V5ModelSpec.CANONICAL_COEFF_SLOTS, e.nodeCount)
+        assertTrue((0 until V5ModelSpec.CANONICAL_COEFF_SLOTS).all {
+            e.kinds[it] == StructuralMathEncoder.Kind.NUMBER
+        })
         assertTrue(!e.truncated)
     }
 
@@ -33,7 +36,7 @@ class NeuralNetworkTest {
         )
         val loss = n.trainBatch(items, 0.0006, 0.05)
         assertTrue(loss.isFinite())
-        assertEquals(300_984, n.parameterCount())
+        assertEquals(167_800, n.parameterCount())
         assertEquals(1, n.optimizerStep())
         assertTrue(n.lastGradientNorm.isFinite())
     }

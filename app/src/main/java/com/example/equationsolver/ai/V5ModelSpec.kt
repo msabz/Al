@@ -68,7 +68,7 @@ data class V5Prediction(
 
 object V5ModelSpec {
     const val FILE_MAGIC = 0x4D414935 // "MAI5"
-    const val FILE_VERSION = 1
+    const val FILE_VERSION = 2
 
     const val MAX_NODES = 80
     const val TOKEN_VOCAB = 22
@@ -77,9 +77,9 @@ object V5ModelSpec {
     const val NODE_FEATURES = EMBEDDING_SIZE + EXTRA_FEATURES
     const val INPUT_SIZE = MAX_NODES * NODE_FEATURES
 
-    const val SHARED_1 = 160
-    const val SHARED_2 = 128
-    const val HEAD_HIDDEN = 64
+    const val SHARED_1 = 96
+    const val SHARED_2 = 64
+    const val HEAD_HIDDEN = 48
     const val HEAD_COUNT = 4
 
     const val ROOT_SLOTS = 5
@@ -89,4 +89,6 @@ object V5ModelSpec {
     const val ROOT_SCALE = 100.0
     const val PRESENCE_THRESHOLD = 0.50
     const val MAX_GRADIENT_NORM = 5.0
+    const val WEIGHT_DECAY = 1e-5
+    const val CANONICAL_COEFF_SLOTS = 6
 }

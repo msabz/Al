@@ -207,7 +207,7 @@ class NeuralNetwork(private val random: Random = Random.Default) {
             val base = p * V5ModelSpec.NODE_FEATURES
             for (d in 0 until V5ModelSpec.EMBEDDING_SIZE) input[base + d] = embeddings[kind][d]
             input[base + V5ModelSpec.EMBEDDING_SIZE] = e.numeric[p]
-            input[base + V5ModelSpec.EMBEDDING_SIZE + 1] = if (V5ModelSpec.MAX_NODES <= 1) 0f else p.toFloat() / (V5ModelSpec.MAX_NODES - 1).toFloat()
+            input[base + V5ModelSpec.EMBEDDING_SIZE + 1] = if (kind == StructuralMathEncoder.Kind.PAD || V5ModelSpec.MAX_NODES <= 1) 0f else p.toFloat() / (V5ModelSpec.MAX_NODES - 1).toFloat()
             input[base + V5ModelSpec.EMBEDDING_SIZE + 2] = e.depth[p]
         }
         return input
@@ -395,12 +395,14 @@ class NeuralNetwork(private val random: Random = Random.Default) {
         p: Array<FloatArray>, m: Array<FloatArray>, v: Array<FloatArray>, g: Array<FloatArray>,
         lr: Float, scale: Float, beta1: Float, beta2: Float, eps: Float, c1: Float, c2: Float
     ) {
+        val decay = (1f - lr * V5ModelSpec.WEIGHT_DECAY.toFloat()).coerceAtLeast(0f)
         for (i in p.indices) for (j in p[i].indices) {
             val grad = g[i][j] * scale
             m[i][j] = beta1 * m[i][j] + (1f - beta1) * grad
             v[i][j] = beta2 * v[i][j] + (1f - beta2) * grad * grad
             val mh = m[i][j] / c1
             val vh = v[i][j] / c2
+            p[i][j] *= decay
             p[i][j] -= lr * mh / (sqrt(vh.toDouble()).toFloat() + eps)
         }
     }

@@ -6,6 +6,7 @@
 TOTAL_STEPS = 30000          # increase for longer training
 BATCH_SIZE = 128             # 128 is usually good on a Colab GPU
 LEARNING_RATE = 6e-4
+WEIGHT_DECAY = 1e-5
 CONSISTENCY_WEIGHT = 0.05
 DEEPMIND_RATIO = 0.60        # rest is v5 synthetic curriculum
 CHECKPOINT_EVERY = 1000
@@ -42,10 +43,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
 # ========================= MAI5 CONTRACT (must match Android) =========================
-MAGIC=0x4D414935; VERSION=1
+MAGIC=0x4D414935; VERSION=2
 MAX_NODES=80; TOKEN_VOCAB=22; EMB=16; EXTRA=3; NODE_FEATURES=19; INPUT=1520
-SHARED1=160; SHARED2=128; HEAD_HIDDEN=64; HEADS=4; ROOT_SLOTS=5; STATES=4; HEAD_OUT=14
-ROOT_SCALE=100.0; MAX_GRAD_NORM=5.0
+SHARED1=96; SHARED2=64; HEAD_HIDDEN=48; HEADS=4; ROOT_SLOTS=5; STATES=4; HEAD_OUT=14
+ROOT_SCALE=100.0; MAX_GRAD_NORM=5.0; CANONICAL_COEFF_SLOTS=6
 PAD,NUMBER,X,Y,PI,E,ADD,SUB,MUL,DIV,POW,NEG,SIN,COS,TAN,SQRT,LOG,LN,EXP,ABS,EQ,SEP=range(22)
 LINEAR,POLYNOMIAL,ANALYTIC,SYSTEM=range(4)
 FINITE,NO_SOLUTION,INFINITE,UNSUPPORTED=range(4)
@@ -137,9 +138,188 @@ def rpn(expr):
         pop_op(text,out)
     return out
 
+
+CANONICAL_EPS=1e-10
+
+def _eq_at(s):
+    depth=0
+    for i,c in enumerate(s):
+        if c=='(': depth+=1
+        elif c==')': depth-=1
+        elif c=='=' and depth==0: return i
+    return -1
+
+def _poly_const(v):
+    out=[0.0]*CANONICAL_COEFF_SLOTS; out[0]=float(v); return out
+
+def _poly_degree(p):
+    for i in range(len(p)-1,-1,-1):
+        if abs(p[i])>CANONICAL_EPS: return i
+    return 0
+
+def _poly_mul(a,b):
+    out=[0.0]*CANONICAL_COEFF_SLOTS
+    for i,av in enumerate(a):
+        for j,bv in enumerate(b):
+            term=av*bv
+            if abs(term)<=CANONICAL_EPS: continue
+            if i+j>=len(out): return None
+            out[i+j]+=term
+    return out
+
+def _poly_pow(base,e):
+    out=_poly_const(1.0)
+    for _ in range(e):
+        out=_poly_mul(out,base)
+        if out is None:return None
+    return out
+
+def _const_fn(kind,v):
+    try:
+        value={SIN:math.sin,COS:math.cos,TAN:math.tan,SQRT:math.sqrt,
+               LOG:math.log10,LN:math.log,EXP:math.exp,ABS:abs}[kind](v)
+        return value if math.isfinite(value) else None
+    except Exception:
+        return None
+
+def _rpn_poly(nodes,var_kind):
+    st=[]
+    for k,v in nodes:
+        if k==NUMBER: st.append(_poly_const(v))
+        elif k==var_kind:
+            p=_poly_const(0); p[1]=1.0; st.append(p)
+        elif k in (X,Y): return None
+        elif k==PI: st.append(_poly_const(math.pi))
+        elif k==E: st.append(_poly_const(math.e))
+        elif k==NEG:
+            if not st:return None
+            a=st.pop(); st.append([-x for x in a])
+        elif k in (ADD,SUB,MUL,DIV,POW):
+            if len(st)<2:return None
+            b=st.pop(); a=st.pop()
+            if k==ADD: st.append([a[i]+b[i] for i in range(len(a))])
+            elif k==SUB: st.append([a[i]-b[i] for i in range(len(a))])
+            elif k==MUL:
+                p=_poly_mul(a,b)
+                if p is None:return None
+                st.append(p)
+            elif k==DIV:
+                if _poly_degree(b)>0 or abs(b[0])<=CANONICAL_EPS:return None
+                st.append([x/b[0] for x in a])
+            else:
+                if _poly_degree(b)>0:return None
+                e=round(b[0])
+                if abs(b[0]-e)>1e-9 or not 0<=e<=5:return None
+                p=_poly_pow(a,int(e))
+                if p is None:return None
+                st.append(p)
+        elif k in (SIN,COS,TAN,SQRT,LOG,LN,EXP,ABS):
+            if not st:return None
+            a=st.pop()
+            if _poly_degree(a)>0:return None
+            val=_const_fn(k,a[0])
+            if val is None:return None
+            st.append(_poly_const(val))
+        else:return None
+    return st[0] if len(st)==1 else None
+
+def _rpn_affine(nodes):
+    st=[]
+    for k,v in nodes:
+        if k==NUMBER:st.append((0.0,0.0,float(v)))
+        elif k==X:st.append((1.0,0.0,0.0))
+        elif k==Y:st.append((0.0,1.0,0.0))
+        elif k==PI:st.append((0.0,0.0,math.pi))
+        elif k==E:st.append((0.0,0.0,math.e))
+        elif k==NEG:
+            if not st:return None
+            x,y,c=st.pop();st.append((-x,-y,-c))
+        elif k in (ADD,SUB,MUL,DIV,POW):
+            if len(st)<2:return None
+            bx,by,bc=st.pop(); ax,ay,ac=st.pop()
+            if k in (ADD,SUB):
+                s=1.0 if k==ADD else -1.0; st.append((ax+s*bx,ay+s*by,ac+s*bc))
+            elif k==MUL:
+                av=abs(ax)>CANONICAL_EPS or abs(ay)>CANONICAL_EPS
+                bv=abs(bx)>CANONICAL_EPS or abs(by)>CANONICAL_EPS
+                if av and bv:return None
+                st.append((ax*bc,ay*bc,ac*bc) if av else (bx*ac,by*ac,bc*ac))
+            elif k==DIV:
+                if abs(bx)>CANONICAL_EPS or abs(by)>CANONICAL_EPS or abs(bc)<=CANONICAL_EPS:return None
+                st.append((ax/bc,ay/bc,ac/bc))
+            else:
+                if abs(bx)>CANONICAL_EPS or abs(by)>CANONICAL_EPS:return None
+                e=round(bc)
+                if abs(bc-e)>1e-9:return None
+                av=abs(ax)>CANONICAL_EPS or abs(ay)>CANONICAL_EPS
+                if e==0:st.append((0.0,0.0,1.0))
+                elif e==1:st.append((ax,ay,ac))
+                elif av:return None
+                else:st.append((0.0,0.0,ac**e))
+        elif k in (SIN,COS,TAN,SQRT,LOG,LN,EXP,ABS):
+            if not st:return None
+            x,y,c=st.pop()
+            if abs(x)>CANONICAL_EPS or abs(y)>CANONICAL_EPS:return None
+            val=_const_fn(k,c)
+            if val is None:return None
+            st.append((0.0,0.0,val))
+        else:return None
+    return st[0] if len(st)==1 else None
+
+def _canonical_poly(src,fam):
+    if ';' in src:return None
+    at=_eq_at(src)
+    if at<0:return None
+    has_x='x' in src; has_y='y' in src
+    if has_x and has_y:return None
+    var_kind=Y if has_y else X
+    left=_rpn_poly(rpn(src[:at]),var_kind); right=_rpn_poly(rpn(src[at+1:]),var_kind)
+    if left is None or right is None:return None
+    p=[left[i]-right[i] for i in range(CANONICAL_COEFF_SLOTS)]
+    degree=_poly_degree(p)
+    if fam==LINEAR and degree>1:return None
+    if fam==POLYNOMIAL and degree<2:return None
+    scale=max(abs(x) for x in p)
+    if scale<=CANONICAL_EPS:return [0.0]*CANONICAL_COEFF_SLOTS
+    p=[x/scale for x in p]
+    degree=_poly_degree(p)
+    if p[degree]<0:p=[-x for x in p]
+    return [0.0 if abs(x)<1e-12 else x for x in p]
+
+def _canonical_row(eq):
+    at=_eq_at(eq)
+    if at<0:return None
+    left=_rpn_affine(rpn(eq[:at])); right=_rpn_affine(rpn(eq[at+1:]))
+    if left is None or right is None:return None
+    a=left[0]-right[0]; b=left[1]-right[1]; c=-(left[2]-right[2])
+    scale=max(abs(a),abs(b),abs(c))
+    if scale<=CANONICAL_EPS:return [0.0,0.0,0.0]
+    row=[a/scale,b/scale,c/scale]
+    first=next((x for x in row if abs(x)>CANONICAL_EPS),0.0)
+    if first<0:row=[-x for x in row]
+    return [0.0 if abs(x)<1e-12 else x for x in row]
+
+def _canonical_numeric(src,fam):
+    if fam==SYSTEM:
+        parts=[q for q in src.split(';') if q]
+        if len(parts)!=2:return None
+        rows=[_canonical_row(q) for q in parts]
+        if any(r is None for r in rows):return None
+        rows=sorted(rows,key=lambda r:(r[0],r[1],r[2]))
+        return rows[0]+rows[1]
+    if fam in (LINEAR,POLYNOMIAL):return _canonical_poly(src,fam)
+    return None
+
 def encode(raw):
     src=normalize_text(raw); equations=[q for q in src.split(';') if q]
     if not 1<=len(equations)<=2: raise ValueError("equation count")
+    fam=family_of(src)
+    canonical=_canonical_numeric(src,fam)
+    if canonical is not None:
+        kinds=np.zeros(MAX_NODES,np.int64); numeric=np.zeros(MAX_NODES,np.float32); depth=np.zeros(MAX_NODES,np.float32)
+        for i,v in enumerate(canonical):
+            kinds[i]=NUMBER; numeric[i]=np.float32(v); depth[i]=np.float32((i+1)/len(canonical))
+        return kinds,numeric,depth,fam,src
     nodes=[]
     for idx,q in enumerate(equations):
         # top-level equals
@@ -179,7 +359,8 @@ class MAI5(nn.Module):
             nn.init.kaiming_uniform_(h[2].weight,a=math.sqrt(5)); nn.init.zeros_(h[2].bias)
     def forward(self,kinds,numeric,depth,family):
         b=kinds.shape[0]; emb=self.embedding(kinds)
-        pos=torch.linspace(0,1,MAX_NODES,device=kinds.device).view(1,MAX_NODES,1).expand(b,-1,-1)
+        active=(kinds != PAD).to(numeric.dtype).unsqueeze(-1)
+        pos=torch.linspace(0,1,MAX_NODES,device=kinds.device).view(1,MAX_NODES,1).expand(b,-1,-1)*active
         feats=torch.cat([emb,numeric.unsqueeze(-1),pos,depth.unsqueeze(-1)],-1).reshape(b,-1)
         z=F.relu(self.shared1(feats)); z=F.relu(self.shared2(z))
         all_heads=torch.stack([h(z) for h in self.heads],1)
@@ -187,7 +368,7 @@ class MAI5(nn.Module):
 
 model=MAI5().to(device)
 print("Parameters:",sum(p.numel() for p in model.parameters()))
-assert sum(p.numel() for p in model.parameters())==300984
+assert sum(p.numel() for p in model.parameters())==167800
 
 # Android-compatible Adam: one global step; even routed heads receive zero-gradient moment decay.
 params=list(model.parameters()); moments=[torch.zeros_like(p) for p in params]; velocities=[torch.zeros_like(p) for p in params]; adam_step=0
@@ -199,6 +380,7 @@ def android_adam_step(lr):
     with torch.no_grad():
         for p,g,m,v in zip(params,grads,moments,velocities):
             g=g*scale; m.mul_(b1).add_(g,alpha=1-b1); v.mul_(b2).addcmul_(g,g,value=1-b2)
+            if p.ndim > 1: p.mul_(1.0-lr*WEIGHT_DECAY)
             p.addcdiv_(m/c1,(v/c2).sqrt().add_(1e-8),value=-lr)
         model.embedding.weight[PAD].zero_(); moments[0][PAD].zero_(); velocities[0][PAD].zero_()
     model.zero_grad(set_to_none=True)
@@ -296,7 +478,7 @@ def canonical_equations(eq_strings):
 
 def extract_polynomial_equality(q):
     patterns=[
-      r"^Let (.+?=.+?)\. (?:What is|Calculate) [A-Za-z]\??$", r"^Suppose (.+?=.+?)\. (?:What is|Calculate) [A-Za-z]\??$",
+      r"^Let (.+?=.+?)\. (?:What is|Calculate) [A-Za-z][?.]$", r"^Suppose (.+?=.+?)\. (?:What is|Calculate) [A-Za-z][?.]$",
       r"^What is [A-Za-z] in (.+?=.+?)\?$", r"^Solve (.+?=.+?)(?: for [A-Za-z])?\.$",
       r"^Find [A-Za-z],? (?:such that|given that) (.+?=.+?)\.$", r"^Determine [A-Za-z],? (?:so that|given that) (.+?=.+?)\.$"
     ]
@@ -305,7 +487,7 @@ def extract_polynomial_equality(q):
         if m:return m.group(1)
     raise ValueError("unparsed polynomial prompt")
 
-def deepmind_example(rng):
+def deepmind_example(rng, allow_synthetic_fallback=True):
     for _ in range(80):
         name=rng.choice(DM_NAMES); problem=dm_modules[name](); q=str(problem.question)
         try:
@@ -333,7 +515,9 @@ def deepmind_example(rng):
                 return mk(eq,real,equiv=swap(eq))
         except Exception:
             continue
-    return synthetic(rng)
+    if allow_synthetic_fallback:
+        return synthetic(rng)
+    raise RuntimeError("DeepMind parser exhausted without a compatible equation example")
 
 # ========================= BATCHING =========================
 def collate(examples):
@@ -404,9 +588,28 @@ if RESUME_FROM_MAI5:
     from google.colab import files
     uploaded=files.upload(); path=next(iter(uploaded)); load_mai5(path)
 
-# Fixed external holdout: larger coefficient/solution range, never fed into training.
+# Fixed holdout. DeepMind-only runs use the official interpolate split and never
+# call the project synthetic generator; mixed/local experiments keep the legacy bank.
+def _build_official_holdout(count=160):
+    global dm_modules, DM_NAMES
+    old_modules=dm_modules; old_names=list(DM_NAMES)
+    dm_modules=dm_algebra.test(); DM_NAMES=["linear_1d","linear_2d","polynomial_roots"]
+    rng=random.Random(0xA165); out=[]; attempts=0
+    try:
+        while len(out)<count and attempts<count*500:
+            attempts+=1
+            try:e=deepmind_example(rng,allow_synthetic_fallback=False)
+            except Exception:continue
+            vals=list(e['roots'])+list(e['system'])
+            if any((not math.isfinite(float(v))) or abs(float(v))>300 for v in vals):continue
+            out.append(e)
+    finally:
+        dm_modules=old_modules; DM_NAMES=old_names
+    if len(out)!=count:raise RuntimeError(f"official DeepMind holdout short: {len(out)}/{count}")
+    return out
+
 hold_rng=random.Random(0xA165)
-holdout=[synthetic(hold_rng,max_abs=240) for _ in range(160)]
+holdout=_build_official_holdout(160) if DEEPMIND_RATIO>=0.999 else [synthetic(hold_rng,max_abs=240) for _ in range(160)]
 
 def evaluate():
     model.eval(); sq=ae=0.; cnt=within=state_ok=0

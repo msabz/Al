@@ -6,6 +6,7 @@ TOTAL_STEPS = 30000
 BATCH_SIZE = 0                  # 0 = auto-benchmark; otherwise explicit batch
 LEARNING_RATE = 2.0e-4
 MIN_LEARNING_RATE = 2.0e-5
+WEIGHT_DECAY = 1e-5
 WARMUP_STEPS = 800
 CONSISTENCY_WEIGHT = 0.03
 DEEPMIND_RATIO = 0.65
@@ -90,6 +91,8 @@ def _replace_setting(text, name, value):
 
 base_src = _replace_setting(base_src, "RESUME_FROM_MAI5", "False")
 base_src = _replace_setting(base_src, "AUTO_DOWNLOAD_AT_END", "False")
+base_src = _replace_setting(base_src, "DEEPMIND_RATIO", repr(DEEPMIND_RATIO))
+base_src = _replace_setting(base_src, "WEIGHT_DECAY", repr(WEIGHT_DECAY))
 base_prefix = base_src.split("# ========================= TRAIN =========================", 1)[0]
 ns = {"__name__": "mathai_v5_turbo_base"}
 exec(compile(base_prefix, str(BASE), "exec"), ns)
@@ -307,8 +310,8 @@ def parse_linear_2d(question, answer):
 
 
 POLY_PATTERNS = [
-    r"^Let (.+?=.+?)\. (?:What is|Calculate) ([A-Za-z])\??$",
-    r"^Suppose (.+?=.+?)\. (?:What is|Calculate) ([A-Za-z])\??$",
+    r"^Let (.+?=.+?)\. (?:What is|Calculate) ([A-Za-z])[?.]$",
+    r"^Suppose (.+?=.+?)\. (?:What is|Calculate) ([A-Za-z])[?.]$",
     r"^What is ([A-Za-z]) in (.+?=.+?)\?$",
     r"^Solve (.+?=.+?)(?: for ([A-Za-z]))?\.$",
     r"^Find ([A-Za-z]),? (?:such that|given that) (.+?=.+?)\.$",
@@ -424,8 +427,11 @@ print("فلتر الاستقرار: |target| <=", TRAIN_TARGET_ABS, "حتى لا
 dm_capacity = DEEPMIND_PER_FILE * len(located)
 dm_writer = PoolWriter(dm_capacity)
 rejects = {}
+dm_split_ranges = {}
 pre_start = time.time()
 for file_idx, ((split_name, module), path) in enumerate(located.items(), 1):
+    if split_name not in dm_split_ranges:
+        dm_split_ranges[split_name] = [dm_writer.count, dm_writer.count]
     accepted_here = 0; seen_here = 0
     t0 = time.time()
     print(f"\n[{file_idx}/{len(located)}] {split_name}/{module}")
@@ -445,8 +451,11 @@ for file_idx, ((split_name, module), path) in enumerate(located.items(), 1):
             print(f"  accepted={accepted_here:6d} seen={seen_here:7d} rate={rate:7.0f} ex/s", flush=True)
         if accepted_here >= DEEPMIND_PER_FILE:
             break
+    dm_split_ranges[split_name][1] = dm_writer.count
     print(f"  ✓ accepted={accepted_here} / seen={seen_here} in {time.time()-t0:.1f}s")
 dm_writer.trim()
+dm_split_ends = {name: end for name, (_, end) in dm_split_ranges.items()}
+print("DeepMind curriculum ranges:", dm_split_ranges)
 print(f"\nDeepMind pool : {dm_writer.count:,} أمثلة")
 print(f"Preprocess time: {time.time()-pre_start:.1f}s")
 print("أكثر أسباب الرفض:", sorted(rejects.items(), key=lambda kv: -kv[1])[:8])
@@ -585,6 +594,8 @@ def turbo_adam_step(lr):
             g = g * clip
             m.mul_(b1).add_(g, alpha=1-b1)
             v.mul_(b2).addcmul_(g, g, value=1-b2)
+            if p.ndim > 1:
+                p.mul_(1.0 - lr * WEIGHT_DECAY)
             p.addcdiv_(m / c1, (v / c2).sqrt().add_(1e-8), value=-lr)
         model.embedding.weight[ns["PAD"]].zero_()
         moments[0][ns["PAD"]].zero_()
@@ -674,6 +685,7 @@ print(f"Samples/step   : {BATCH_SIZE:,} ({DEEPMIND_RATIO*100:.0f}% DeepMind / {(
 print(f"Peak LR        : {LEARNING_RATE:g}")
 print(f"Warmup         : {WARMUP_STEPS} steps")
 print(f"Final LR       : {MIN_LEARNING_RATE:g}")
+print(f"Weight decay   : {WEIGHT_DECAY:g} (AdamW, matrices only)")
 print(f"AMP FP16       : {USE_AMP}")
 print("Grad clip      : global norm <= 5.0")
 print(f"Checkpoints    : every {CHECKPOINT_EVERY} steps")

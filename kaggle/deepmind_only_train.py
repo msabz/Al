@@ -216,8 +216,9 @@ print(f"VRAM used      : {human_bytes(total_mem-free_mem)} / {human_bytes(total_
     # Batch sampler: 100% DeepMind, and no second/equivalent input.
     take_start = text.index('def take(pool, count):')
     stable_start = text.index('\n\ndef stable_loss', take_start)
-    text = text[:take_start] + '''def take(pool, count):
-    idx = torch.randint(0, pool["size"], (count,), device=device)
+    text = text[:take_start] + '''def take(pool, count, upper=None):
+    upper = pool["size"] if upper is None else max(1, min(int(upper), int(pool["size"])))
+    idx = torch.randint(0, upper, (count,), device=device)
     return (
         pool["k"][idx].long(),
         pool["n"][idx].float(),
@@ -231,13 +232,26 @@ print(f"VRAM used      : {human_bytes(total_mem-free_mem)} / {human_bytes(total_
     )
 
 
-def mixed_batch(batch_size):
-    return take(dm_pool, batch_size)
+def curriculum_limit(step_idx=None):
+    if step_idx is None:
+        return dm_pool["size"], "all"
+    frac = float(step_idx) / max(float(TOTAL_STEPS), 1.0)
+    if frac <= 0.25:
+        return dm_split_ends["train-easy"], "easy"
+    if frac <= 0.60:
+        return dm_split_ends["train-medium"], "easy+medium"
+    return dm_split_ends["train-hard"], "easy+medium+hard"
+
+
+def mixed_batch(batch_size, step_idx=None):
+    upper, _ = curriculum_limit(step_idx)
+    return take(dm_pool, batch_size, upper)
 ''' + text[stable_start:]
 
     # Avoid wasting half the compute on a disabled consistency branch.
     text = text.replace('o = train_model(k,n,d,f); oo = train_model(*eqv)', 'o = train_model(k,n,d,f); oo = None')
     text = text.replace('other = train_model(*eqv)', 'other = None')
+    text = text.replace('k,n,d,f,r,rc,sy,st,eqv = mixed_batch(BATCH_SIZE)', 'k,n,d,f,r,rc,sy,st,eqv = mixed_batch(BATCH_SIZE, step_idx)', 1)
     text = text.replace(
         'print(f"Samples/step   : {BATCH_SIZE:,} ({DEEPMIND_RATIO*100:.0f}% DeepMind / {(1-DEEPMIND_RATIO)*100:.0f}% synthetic)")',
         'print(f"Samples/step   : {BATCH_SIZE:,} (100% official DeepMind / 0% project synthetic)")',
@@ -256,6 +270,8 @@ def mixed_batch(batch_size):
     print("[DEEPMIND-ONLY] linear_1d + linear_2d + polynomial_roots", flush=True)
     print("[DEEPMIND-ONLY] project synthetic generator: DISABLED", flush=True)
     print("[DEEPMIND-ONLY] project augmentation: DISABLED", flush=True)
+    print("[DEEPMIND-ONLY] representation: canonical numeric coefficients for linear/poly/system", flush=True)
+    print("[DEEPMIND-ONLY] curriculum: easy -> easy+medium -> easy+medium+hard", flush=True)
     return worker
 
 
