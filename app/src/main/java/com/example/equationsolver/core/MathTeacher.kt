@@ -40,7 +40,7 @@ object MathTeacher {
             supported = true
         )
 
-        val primary = roots.minWithOrNull(compareBy<Double> { abs(it) }.thenBy { it }) ?: roots.first()
+        val primary = principalRoot(roots)
         val label = if (hasY && !hasX) "y" else "x"
         val summary = if (roots.size == 1) "$label = ${fmt(primary)}"
         else roots.joinToString(prefix = "$label ∈ {", postfix = "}") { fmt(it) }
@@ -56,6 +56,15 @@ object MathTeacher {
                 "الجذر الرئيسي للمقارنة مع النموذج هو: ${fmt(primary)}"
             )
         )
+    }
+
+    private fun principalRoot(roots: List<Double>): Double {
+        val minimumMagnitude = roots.minOf { abs(it) }
+        return roots
+            .filter { abs(abs(it) - minimumMagnitude) <= 1e-4 }
+            .minOrNull()
+            ?: roots.minByOrNull { abs(it) }
+            ?: roots.first()
     }
 
     private fun fromUniversal(result: UniversalEquationSolver.Result): Answer {
