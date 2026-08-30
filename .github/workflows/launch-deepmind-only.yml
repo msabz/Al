@@ -41,6 +41,19 @@ jobs:
           failed = [name for name, ok in checks.items() if not ok]
           if failed:
               raise SystemExit('DEEPMIND_ONLY_PREFLIGHT_FAILED: ' + ', '.join(failed))
+
+          # Simulate the exact GitHub SHA injection before touching Kaggle.
+          dummy_sha = '0123456789abcdef0123456789abcdef01234567'
+          injected = entry.replace('__SOURCE_COMMIT__', dummy_sha)
+          if '__SOURCE_COMMIT__' in injected:
+              raise SystemExit('ENTRYPOINT_INJECTION_PREFLIGHT_FAILED: placeholder remains')
+          compile(injected, 'injected_kaggle_train.py', 'exec')
+          prefix = injected.split('\nurl = ', 1)[0]
+          ns = {}
+          exec(compile(prefix, 'injected_kaggle_train_prefix.py', 'exec'), ns, ns)
+          if ns.get('SOURCE_COMMIT') != dummy_sha:
+              raise SystemExit('ENTRYPOINT_INJECTION_PREFLIGHT_FAILED: wrong SOURCE_COMMIT')
+          print('ENTRYPOINT_INJECTION_PREFLIGHT_OK')
           print('DEEPMIND_ONLY_PREFLIGHT_OK')
           PY
 
