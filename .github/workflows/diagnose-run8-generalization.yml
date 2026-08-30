@@ -27,6 +27,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install CPU diagnostic dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install -q --upgrade pip
+          python -m pip install -q numpy sympy absl-py six
+          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          python - <<'PY'
+          import numpy, sympy, torch
+          assert not torch.cuda.is_available()
+          print('CPU_DIAG_DEPS_OK', numpy.__version__, sympy.__version__, torch.__version__)
+          PY
+
       - name: Download exact Run 8 evidence
         uses: actions/download-artifact@v4
         with:
