@@ -26,8 +26,9 @@ object MathTeacher {
             }
         } catch (_: Exception) { }
 
-        val hasX = Regex("(^|[^a-z])x([^a-z]|$)").containsMatchIn(normalized.lowercase()) || normalized.lowercase().contains('x')
-        val hasY = normalized.lowercase().contains('y')
+        val lower = normalized.lowercase()
+        val hasX = lower.contains('x')
+        val hasY = lower.contains('y')
         if (hasX && hasY) return Answer("غير مدعوم", "المعادلات غير الخطية متعددة المتغيرات غير مدعومة في المصحح الحالي.", supported = false)
         if (!hasX && !hasY) return Answer("غير مدعوم", "لا يوجد متغير x أو y في المعادلة.", supported = false)
 
@@ -39,7 +40,7 @@ object MathTeacher {
             supported = true
         )
 
-        val primary = roots.minByOrNull { abs(it) } ?: roots.first()
+        val primary = roots.minWithOrNull(compareBy<Double> { abs(it) }.thenBy { it }) ?: roots.first()
         val label = if (hasY && !hasX) "y" else "x"
         val summary = if (roots.size == 1) "$label = ${fmt(primary)}"
         else roots.joinToString(prefix = "$label ∈ {", postfix = "}") { fmt(it) }
@@ -51,8 +52,8 @@ object MathTeacher {
             roots = roots,
             steps = listOf(
                 "تم تقييم طرفي المعادلة عدديًا.",
-                "تم البحث عن تغيرات الإشارة ونقاط قريبة من الصفر.",
-                "الجذر الرئيسي للمقارنة مع النموذج هو الأقرب إلى الصفر: ${fmt(primary)}"
+                "تم فحص المجال [-100, 100] كاملًا ثم ترتيب الجذور حسب قربها من الصفر.",
+                "الجذر الرئيسي للمقارنة مع النموذج هو: ${fmt(primary)}"
             )
         )
     }
@@ -77,11 +78,13 @@ object MathTeacher {
                 val root = bisect(equation, a, b, solveY)
                 if (root != null) addRoot(roots, root)
             }
-            if (roots.size >= 12) break
             a = b
             fa = fb
         }
-        return roots.sorted()
+        return roots
+            .sortedWith(compareBy<Double> { abs(it) }.thenBy { it })
+            .take(12)
+            .sorted()
     }
 
     private fun safeResidual(equation: String, value: Double, solveY: Boolean): Double? = try {
@@ -106,20 +109,20 @@ object MathTeacher {
     }
 
     private fun refineNewton(equation: String, start: Double, solveY: Boolean): Double {
-        var x = start
+        var value = start
         repeat(15) {
-            val f = safeResidual(equation, x, solveY) ?: return x
-            if (abs(f) < 1e-10) return x
-            val h = 1e-5 * (1.0 + abs(x))
-            val fp = safeResidual(equation, x + h, solveY) ?: return x
-            val fm = safeResidual(equation, x - h, solveY) ?: return x
+            val f = safeResidual(equation, value, solveY) ?: return value
+            if (abs(f) < 1e-10) return value
+            val h = 1e-5 * (1.0 + abs(value))
+            val fp = safeResidual(equation, value + h, solveY) ?: return value
+            val fm = safeResidual(equation, value - h, solveY) ?: return value
             val derivative = (fp - fm) / (2.0 * h)
-            if (abs(derivative) < 1e-12) return x
-            val next = x - f / derivative
-            if (!next.isFinite() || next !in -100.0..100.0) return x
-            x = next
+            if (abs(derivative) < 1e-12) return value
+            val next = value - f / derivative
+            if (!next.isFinite() || next !in -100.0..100.0) return value
+            value = next
         }
-        return x
+        return value
     }
 
     private fun addRoot(roots: MutableList<Double>, value: Double) {
