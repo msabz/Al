@@ -11,12 +11,15 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.example.equationsolver.MainActivity
-import com.example.equationsolver.R
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class TrainingService : Service() {
@@ -43,13 +46,16 @@ class TrainingService : Service() {
         super.onCreate()
         ModelManager.init(applicationContext)
         createChannel()
-        startForeground(NOTIFICATION_ID, notification("التدريب مستمر"))
+        startForeground(NOTIFICATION_ID, notification("التدريب جاهز"))
         acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
-            ACTION_STOP -> { stopTrainingAndSelf(); START_NOT_STICKY }
+            ACTION_STOP -> {
+                stopTrainingAndSelf()
+                START_NOT_STICKY
+            }
             ACTION_START, null -> {
                 ModelManager.setTrainingEnabled(applicationContext, true)
                 startTrainingIfNeeded()
@@ -62,35 +68,53 @@ class TrainingService : Service() {
     private fun startTrainingIfNeeded() {
         if (job?.isActive == true) return
         job = scope.launch {
-            try {
-                TrainingEngine.trainContinuous(applicationContext, learningRate = 0.001) { samples, batches, epoch, loss, validation, paused, reason ->
-                    if (paused) {
-                        updateNotification("التدريب متوقف مؤقتًا: $reason")
-                        sendBroadcast(Intent(ACTION_PAUSED).setPackage(packageName).putExtra(EXTRA_REASON, reason))
-                    } else {
-                        updateNotification("تدريب: %,d معادلة | Loss %.6f".format(samples, loss))
-                        sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName)
-                            .putExtra(EXTRA_SAMPLES, samples).putExtra(EXTRA_BATCHES, batches)
-                            .putExtra(EXTRA_EPOCH, epoch).putExtra(EXTRA_LOSS, loss)
-                            .putExtra(EXTRA_VALIDATION, validation))
+            while (isActive && ModelManager.isTrainingEnabled(applicationContext)) {
+                try {
+                    TrainingEngine.trainContinuous(applicationContext, learningRate = 0.0007) {
+                            samples, batches, epoch, loss, validation, paused, reason ->
+                        if (paused) {
+                            updateNotification("متوقف مؤقتًا: $reason")
+                            sendBroadcast(Intent(ACTION_PAUSED).setPackage(packageName).putExtra(EXTRA_REASON, reason))
+                        } else {
+                            updateNotification("%,d معادلة | Loss %.6f".format(samples, loss))
+                            sendBroadcast(
+                                Intent(ACTION_PROGRESS).setPackage(packageName)
+                                    .putExtra(EXTRA_SAMPLES, samples)
+                                    .putExtra(EXTRA_BATCHES, batches)
+                                    .putExtra(EXTRA_EPOCH, epoch)
+                                    .putExtra(EXTRA_LOSS, loss)
+                                    .putExtra(EXTRA_VALIDATION, validation)
+                            )
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    updateNotification("خطأ تدريب؛ ستتم إعادة المحاولة تلقائيًا")
+                    delay(5000L)
                 }
-            } catch (_: Exception) {
-                // START_STICKY lets Android recreate the service after process loss.
             }
         }
     }
 
     private fun stopTrainingAndSelf() {
         ModelManager.setTrainingEnabled(applicationContext, false)
-        job?.cancel(); job = null
-        ModelManager.save(applicationContext, ModelManager.trainingSamples(applicationContext), ModelManager.trainingBatches(applicationContext), ModelManager.bestValidationMse(applicationContext), ModelManager.lastLoss(applicationContext))
-        releaseWakeLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        val activeJob = job
+        job = null
+        scope.launch {
+            activeJob?.cancelAndJoin()
+            val state = TrainingEngine.snapshot()
+            try {
+                ModelManager.save(applicationContext, state.samples, state.batches, state.bestValidationMse, state.loss)
+            } catch (_: Exception) { }
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EquationSolverAI:Training").apply {
             setReferenceCounted(false)
@@ -121,13 +145,21 @@ class TrainingService : Service() {
             .setContentTitle("Equation Solver AI")
             .setContentText(text)
             .setContentIntent(openPending)
-            .addAction(android.R.drawable.ic_media_pause, "إيقاف", stopPending)
+            .addAction(android.R.drawable.ic_media_pause, "إيقاف وحفظ", stopPending)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
     }
 
-    private fun updateNotification(text: String) = getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+    private fun updateNotification(text: String) =
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { job?.cancel(); releaseWakeLock(); scope.cancel(); super.onDestroy() }
+
+    override fun onDestroy() {
+        job?.cancel()
+        releaseWakeLock()
+        scope.cancel()
+        super.onDestroy()
+    }
 }
