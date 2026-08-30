@@ -8,7 +8,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.example.equationsolver.ai.ModelManager
 import com.example.equationsolver.core.ArabicEquationNormalizer
-import com.example.equationsolver.core.UniversalEquationSolver
+import com.example.equationsolver.core.MathTeacher
 import java.util.Locale
 import kotlin.math.abs
 
@@ -50,27 +50,33 @@ class TestActivity : AppCompatActivity() {
             }
             val equation = ArabicEquationNormalizer.normalize(raw)
             try {
-                val result = UniversalEquationSolver.solve(equation)
-                typeText.text = "نوع المسألة: ${UniversalEquationSolver.equationType(equation)}"
-                exactText.text = "الحل الدقيق:\n${result.summary}"
-                stepsText.text = "خطوات الحل:\n" + result.steps.mapIndexed { i, step -> "${i + 1}. $step" }.joinToString("\n")
+                val answer = MathTeacher.solve(equation)
+                typeText.text = "نوع المسألة: ${answer.type}"
+                exactText.text = "الجواب الصحيح:\n${answer.summary}"
+                stepsText.text = if (answer.steps.isEmpty()) "" else "طريقة التحقق:\n" +
+                    answer.steps.mapIndexed { i, step -> "${i + 1}. $step" }.joinToString("\n")
 
-                try {
-                    val prediction = ModelManager.predict(equation)
-                    val px = prediction.getOrNull(0)?.times(100.0)
-                    val py = prediction.getOrNull(1)?.times(100.0)
-                    aiText.text = when {
-                        result.x != null && result.y == null && px != null -> "تقدير AI:\nx ≈ ${fmt(px)}"
-                        result.x == null && result.y != null && py != null -> "تقدير AI:\ny ≈ ${fmt(py)}"
-                        result.x != null && result.y != null && px != null && py != null -> "تقدير AI:\nx ≈ ${fmt(px)}\ny ≈ ${fmt(py)}"
-                        else -> "تقدير AI: لا توجد قيم عددية لهذه الحالة."
+                val prediction = ModelManager.predict(equation)
+                val px = prediction.getOrElse(0) { 0.0 } * 100.0
+                val py = prediction.getOrElse(1) { 0.0 } * 100.0
+                aiText.text = when {
+                    answer.x != null && answer.y != null -> {
+                        val error = abs(px - answer.x) + abs(py - answer.y)
+                        "جواب النموذج:\nx ≈ ${fmt(px)}\ny ≈ ${fmt(py)}\nمجموع الخطأ = ${fmt(error)}"
                     }
-                } catch (e: Exception) {
-                    aiText.text = "تقدير AI غير متاح:\n${e.message ?: "خطأ غير معروف"}"
+                    answer.x != null -> {
+                        val error = abs(px - answer.x)
+                        "جواب النموذج:\nx ≈ ${fmt(px)}\nالخطأ عن الجذر المرجعي = ${fmt(error)}"
+                    }
+                    answer.y != null -> {
+                        val error = abs(py - answer.y)
+                        "جواب النموذج:\ny ≈ ${fmt(py)}\nالخطأ = ${fmt(error)}"
+                    }
+                    else -> "جواب النموذج الخام:\nx ≈ ${fmt(px)}\ny ≈ ${fmt(py)}\nلا يوجد حل عددي مرجعي للمقارنة بهذه الحالة."
                 }
             } catch (e: Exception) {
                 typeText.text = ""
-                exactText.text = "تعذر حل المعادلة:\n${e.message ?: "خطأ غير معروف"}"
+                exactText.text = "تعذر التحقق من المعادلة:\n${e.message ?: "خطأ غير معروف"}"
                 stepsText.text = ""
                 aiText.text = ""
             }
@@ -78,5 +84,5 @@ class TestActivity : AppCompatActivity() {
     }
 
     private fun fmt(value: Double): String =
-        if (abs(value) < 1e-9) "0" else String.format(Locale.US, "%.6f", value).trimEnd('0').trimEnd('.')
+        if (abs(value) < 1e-9) "0" else String.format(Locale.US, "%.8f", value).trimEnd('0').trimEnd('.')
 }
