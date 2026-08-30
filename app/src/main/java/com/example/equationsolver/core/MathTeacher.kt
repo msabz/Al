@@ -52,7 +52,7 @@ object MathTeacher {
             roots = roots,
             steps = listOf(
                 "تم تقييم طرفي المعادلة عدديًا.",
-                "تم فحص المجال [-100, 100] كاملًا ثم ترتيب الجذور حسب قربها من الصفر.",
+                "تم فحص المجال [-100, 100] كاملًا، مع التقاط تغيرات الإشارة والجذور الملامسة للصفر.",
                 "الجذر الرئيسي للمقارنة مع النموذج هو: ${fmt(primary)}"
             )
         )
@@ -73,11 +73,23 @@ object MathTeacher {
         while (a < max) {
             val b = minOf(max, a + step)
             val fb = safeResidual(equation, b, solveY)
-            if (fa != null && abs(fa) < 1e-7) addRoot(roots, refineNewton(equation, a, solveY))
+            val mid = (a + b) * 0.5
+            val fm = safeResidual(equation, mid, solveY)
+
+            if (fa != null && abs(fa) < 1e-7) addVerifiedRoot(roots, equation, a, solveY)
+
             if (fa != null && fb != null && fa * fb < 0.0) {
                 val root = bisect(equation, a, b, solveY)
                 if (root != null) addRoot(roots, root)
             }
+
+            // Even-multiplicity roots can touch zero without a sign change. A local
+            // minimum of |f| is a safe Newton seed, then residual verification decides.
+            if (fa != null && fm != null && fb != null &&
+                abs(fm) < abs(fa) && abs(fm) < abs(fb)) {
+                addVerifiedRoot(roots, equation, mid, solveY)
+            }
+
             a = b
             fa = fb
         }
@@ -85,6 +97,12 @@ object MathTeacher {
             .sortedWith(compareBy<Double> { abs(it) }.thenBy { it })
             .take(12)
             .sorted()
+    }
+
+    private fun addVerifiedRoot(roots: MutableList<Double>, equation: String, start: Double, solveY: Boolean) {
+        val candidate = refineNewton(equation, start, solveY)
+        val residual = safeResidual(equation, candidate, solveY) ?: return
+        if (abs(residual) < 1e-6) addRoot(roots, candidate)
     }
 
     private fun safeResidual(equation: String, value: Double, solveY: Boolean): Double? = try {
@@ -110,9 +128,9 @@ object MathTeacher {
 
     private fun refineNewton(equation: String, start: Double, solveY: Boolean): Double {
         var value = start
-        repeat(15) {
+        repeat(20) {
             val f = safeResidual(equation, value, solveY) ?: return value
-            if (abs(f) < 1e-10) return value
+            if (abs(f) < 1e-12) return value
             val h = 1e-5 * (1.0 + abs(value))
             val fp = safeResidual(equation, value + h, solveY) ?: return value
             val fm = safeResidual(equation, value - h, solveY) ?: return value
