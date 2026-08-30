@@ -56,8 +56,7 @@ class ReinforcementActivity : AppCompatActivity() {
                 repeats = repeats,
                 learningRate = learningRate
             )
-            val state = com.example.equationsolver.ai.TrainingEngine.snapshot()
-            ModelManager.save(this, state.samples, state.batches, state.bestValidationMse, state.loss)
+            ModelManager.save(this)
             correctionText.text = "تم تحديث النموذج بالجواب المرجعي وحفظ الـCheckpoint."
             Toast.makeText(this, "تم التعزيز وحفظ النموذج", Toast.LENGTH_SHORT).show()
             suggestNextEquation()
