@@ -34,6 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/migrate_v5_canonical_numeric.py
+          python scripts/update_v5_tests_for_canonical.py
 
       - name: Static contract checks
         run: |
@@ -48,6 +49,8 @@ jobs:
           grep -q 'const val SHARED_2 = 64' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
           grep -q 'const val HEAD_HIDDEN = 48' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
           grep -q '167800' colab/train_v5_deepmind.py
+          grep -q 'assertEquals(167_800, n.parameterCount())' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
+          grep -q 'CANONICAL_COEFF_SLOTS, e.nodeCount' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
           grep -q 'canonical numeric coefficients for linear/poly/system' kaggle/deepmind_only_train.py
           grep -q 'curriculum: easy -> easy+medium -> easy+medium+hard' kaggle/deepmind_only_train.py
           grep -q 'Synthetic pool  : DISABLED' kaggle/deepmind_only_train.py
@@ -79,6 +82,7 @@ jobs:
             app/src/main/java/com/example/equationsolver/ai/StructuralMathEncoder.kt \
             app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt \
             app/src/test/java/com/example/equationsolver/ai/CanonicalNumericEncoderTest.kt \
+            app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt \
             colab/train_v5_deepmind.py \
             colab/turbo_train_v5.py \
             kaggle/deepmind_only_train.py \
