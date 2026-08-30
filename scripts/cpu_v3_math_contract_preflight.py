@@ -12,7 +12,9 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TRAINER = ROOT / "colab/train_v5_deepmind.py"
-src = TRAINER.read_text()
+WORK = ROOT / ".cpu-v3-preflight"
+WORK.mkdir(parents=True, exist_ok=True)
+src = TRAINER.read_text().replace("/content", str(WORK))
 # Avoid interactive/download behavior and execute definitions only.
 src = re.sub(r"(?m)^RESUME_FROM_MAI5\s*=.*$", "RESUME_FROM_MAI5 = False", src, count=1)
 src = re.sub(r"(?m)^AUTO_DOWNLOAD_AT_END\s*=.*$", "AUTO_DOWNLOAD_AT_END = False", src, count=1)
@@ -103,8 +105,6 @@ for e in polys:
     for root in e["roots"]:
         z = float(root)/ns["ROOT_SCALE"]
         true_residuals.append(abs(eval_poly(coeff,z)))
-        # Three original x-units: large enough to create a useful residual signal,
-        # small enough to stay in the same numeric neighborhood.
         perturbed_residuals.append(abs(eval_poly(coeff,z+0.03)))
 
 true_sorted = sorted(true_residuals)
