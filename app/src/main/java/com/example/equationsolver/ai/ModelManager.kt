@@ -15,6 +15,7 @@ import kotlin.math.abs
 object ModelManager {
     private const val PREFS = "math_ai_model_v5"
     private const val MODEL_FILE = "math_ai_model_v5.mai5"
+    private const val DEFAULT_ASSET_MODEL = "default_model.mai5"
     private const val KEY_SAMPLES = "training_samples"
     private const val KEY_BATCHES = "training_batches"
     private const val KEY_BEST_VAL = "best_validation_mse"
@@ -24,6 +25,7 @@ object ModelManager {
     private const val KEY_LAST_LOSS = "last_loss"
     private const val KEY_CHECKPOINT_TIME = "checkpoint_time"
     private const val KEY_IMPORTED_AT = "imported_at"
+    private const val KEY_BOOTSTRAPPED_ASSET = "bootstrapped_from_asset"
 
     data class TrainingDelta(
         val before: DoubleArray,
@@ -39,7 +41,8 @@ object ModelManager {
         val checkpointBytes: Long,
         val checkpointSavedAt: Long,
         val hasRecoveryBackup: Boolean,
-        val importedAt: Long = 0L
+        val importedAt: Long = 0L,
+        val bootstrappedFromAsset: Boolean = false
     )
 
     lateinit var nn: NeuralNetwork
@@ -146,10 +149,7 @@ object ModelManager {
         edit.putLong(KEY_CHECKPOINT_TIME, System.currentTimeMillis()).commit()
     }
 
-    /**
-     * Imports the exact MAI5 file emitted by Colab. A fresh model is loaded first,
-     * so an incompatible/corrupt file can never damage the current checkpoint.
-     */
+    /** Imports the exact MAI5 file emitted by Colab. */
     @Synchronized
     fun importWeights(context: Context, input: InputStream, resetTrainingStats: Boolean = true): ModelInfo {
         val candidate = NeuralNetwork()
@@ -160,7 +160,10 @@ object ModelManager {
             val enabled = isTrainingEnabled(app)
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
         }
-        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_IMPORTED_AT, System.currentTimeMillis()).commit()
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_IMPORTED_AT, System.currentTimeMillis())
+            .putBoolean(KEY_BOOTSTRAPPED_ASSET, false)
+            .commit()
         save(app)
         return modelInfo(app)
     }
@@ -177,7 +180,10 @@ object ModelManager {
         app.getFileStreamPath(MODEL_FILE).delete()
         app.getFileStreamPath("$MODEL_FILE.bak").delete()
         val enabled = isTrainingEnabled(app)
-        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear()
+            .putBoolean(KEY_TRAINING_ENABLED, enabled)
+            .putBoolean(KEY_BOOTSTRAPPED_ASSET, false)
+            .commit()
         save(app, samples = 0, batches = 0)
     }
 
@@ -203,30 +209,68 @@ object ModelManager {
             checkpointBytes = checkpoint.takeIf { it.exists() }?.length() ?: 0L,
             checkpointSavedAt = p.getLong(KEY_CHECKPOINT_TIME, 0L),
             hasRecoveryBackup = app.getFileStreamPath("$MODEL_FILE.bak").exists(),
-            importedAt = p.getLong(KEY_IMPORTED_AT, 0L)
+            importedAt = p.getLong(KEY_IMPORTED_AT, 0L),
+            bootstrappedFromAsset = p.getBoolean(KEY_BOOTSTRAPPED_ASSET, false)
         )
     }
 
+    /**
+     * Load order:
+     * 1) mutable internal checkpoint
+     * 2) recovery backup
+     * 3) immutable default_model.mai5 embedded by the Colab factory
+     * 4) fresh random v5 model
+     */
     private fun load(context: Context) {
         val file = context.getFileStreamPath(MODEL_FILE)
         val backup = context.getFileStreamPath("$MODEL_FILE.bak")
-        if (tryLoad(file)) return
+        if (tryLoadFile(file)) return
         if (file.exists()) {
             val corrupt = context.getFileStreamPath("$MODEL_FILE.corrupt")
             corrupt.delete(); file.renameTo(corrupt)
         }
         nn = NeuralNetwork()
-        if (tryLoad(backup)) {
+        if (tryLoadFile(backup)) {
             runCatching { FileInputStream(backup).use { i -> FileOutputStream(file).use { o -> i.copyTo(o) } } }
-        } else nn = NeuralNetwork()
+            return
+        }
+
+        if (tryLoadEmbeddedAsset(context)) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_BOOTSTRAPPED_ASSET, true)
+                .putLong(KEY_IMPORTED_AT, 0L)
+                .commit()
+            // Immediately promote the immutable asset to the normal mutable checkpoint,
+            // so on-device Adam training can continue from exactly the Colab state.
+            runCatching { save(context, samples = 0, batches = 0) }
+            return
+        }
+
+        nn = NeuralNetwork()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_BOOTSTRAPPED_ASSET, false).apply()
     }
 
-    private fun tryLoad(file: java.io.File): Boolean {
+    private fun tryLoadFile(file: java.io.File): Boolean {
         if (!file.exists()) return false
+        val candidate = NeuralNetwork()
         return try {
-            DataInputStream(BufferedInputStream(FileInputStream(file))).use { nn.loadState(it) }
+            DataInputStream(BufferedInputStream(FileInputStream(file))).use { candidate.loadState(it) }
+            nn = candidate
             true
         } catch (_: Exception) { false }
+    }
+
+    private fun tryLoadEmbeddedAsset(context: Context): Boolean {
+        val candidate = NeuralNetwork()
+        return try {
+            context.assets.open(DEFAULT_ASSET_MODEL).use { raw ->
+                DataInputStream(BufferedInputStream(raw)).use { candidate.loadState(it) }
+            }
+            nn = candidate
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun meanAbsoluteError(a: DoubleArray, b: DoubleArray): Double {
