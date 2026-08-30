@@ -12,9 +12,9 @@ import pathlib
 import re
 import urllib.request
 
-SOURCE_COMMIT = "__SOURCE_COMMIT__"
-if not re.fullmatch(r"[0-9a-fA-F]{40}", SOURCE_COMMIT):
-    raise RuntimeError(f"SOURCE_COMMIT injection invalid: {SOURCE_COMMIT!r}")
+SOURCE_COMMIT = globals().get("SOURCE_COMMIT")
+if not isinstance(SOURCE_COMMIT, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", SOURCE_COMMIT):
+    raise RuntimeError(f"SOURCE_COMMIT runtime handoff invalid: {SOURCE_COMMIT!r}")
 
 KAGGLE_WORK = pathlib.Path("/kaggle/working")
 if KAGGLE_WORK.is_dir():
