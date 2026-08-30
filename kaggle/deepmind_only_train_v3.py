@@ -40,6 +40,20 @@ ns = {"__name__": "mathai_deepmind_v2_library", "__file__": str(BASE_PATH)}
 exec(compile(base_text, str(BASE_PATH), "exec"), ns)
 
 core = ns["core"]
+# The pinned orchestration core owns its own path globals, so rebind all of them
+# to the same selected work directory. On Kaggle these values remain unchanged;
+# on CPU preflight they point into /tmp instead of the protected /kaggle tree.
+core.WORK = WORK_DIR
+core.ROOT = WORK_DIR / "Al"
+core.WORKING_MODEL = WORK_DIR / "math_ai_v5_working.mai5"
+core.BEST_MODEL = WORK_DIR / "math_ai_v5_best.mai5"
+core.AUDIT = WORK_DIR / "generalization_audit.json"
+core.REPORT = WORK_DIR / "training_report.json"
+core.EVIDENCE = WORK_DIR / "LEARNING_EVIDENCE.txt"
+core.INTEROP = WORK_DIR / "v5_interop_expected.tsv"
+core.CONSOLE = WORK_DIR / "training_console.log"
+core.STATUS = WORK_DIR / "kaggle_job_status.json"
+
 cleanup_large_temporaries = ns["cleanup_large_temporaries"]
 original_prepare_source = ns["_original_prepare_source"]
 
