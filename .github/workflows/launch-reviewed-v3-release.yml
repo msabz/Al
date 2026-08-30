@@ -1,4 +1,4 @@
-# Retry marker: portable work directory fixed before GPU dispatch.
+# Retry marker: pinned core paths rebound to the portable work directory.
 name: Launch Reviewed MAI5 v3 Release
 
 on:
