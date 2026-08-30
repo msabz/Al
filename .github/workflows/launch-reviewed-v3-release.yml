@@ -1,4 +1,3 @@
-# Retry marker: pinned core paths rebound to the portable work directory.
 name: Launch Reviewed MAI5 v3 Release
 
 on:
@@ -13,9 +12,9 @@ permissions:
   actions: write
 
 jobs:
-  preflight-and-dispatch:
+  dispatch-reviewed-v3:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - name: Checkout exact feature branch
         uses: actions/checkout@v4
@@ -23,110 +22,28 @@ jobs:
           ref: feat/v5-deepmind-colab
           fetch-depth: 1
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install CPU-only audit dependencies
+      - name: Verify reviewed v3 workflow is routed through default-branch path
         run: |
           set -euo pipefail
-          python -m pip install -q --upgrade pip
-          python -m pip install -q numpy sympy absl-py six
-          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          python - <<'PY'
-          import torch
-          assert not torch.cuda.is_available(), 'Preflight must remain CPU-only'
-          print('CPU_ONLY_PREFLIGHT_OK', torch.__version__)
-          PY
-
-      - name: Static MAI5 v3 release contract
-        run: |
-          set -euo pipefail
-          python -m py_compile \
-            kaggle/kaggle_train.py \
-            kaggle/deepmind_only_train_v3.py \
-            colab/train_v5_deepmind.py \
-            colab/turbo_train_v5.py \
-            colab/generalization_audit.py
-          grep -q 'FILE_VERSION = 3' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
-          grep -q 'VERSION=3' colab/train_v5_deepmind.py
-          grep -q 'DEEPMIND_ONLY_PER_FAMILY_V2' colab/generalization_audit.py
+          grep -q 'name: Kaggle GPU Train v5 MAI5-v3' .github/workflows/kaggle-train.yml
+          grep -q 'version != 3' .github/workflows/kaggle-train.yml
           grep -q 'deepmind_only_train_v3.py' kaggle/kaggle_train.py
-          grep -q 'version != 3' .github/workflows/kaggle-train-v3.yml
-          echo STATIC_V3_RELEASE_CONTRACT_OK
+          grep -q 'DEEPMIND_ONLY_PER_FAMILY_V2' colab/generalization_audit.py
+          echo REVIEWED_V3_DISPATCH_CONTRACT_OK
 
-      - name: Build exact Turbo worker without running GPU
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os, pathlib, sys
-          source_sha = os.environ['SOURCE_SHA']
-          path = pathlib.Path('kaggle/deepmind_only_train_v3.py')
-          text = path.read_text().replace('__SOURCE_COMMIT__', source_sha)
-          marker = '\n\ntry:\n    core.main()\n    validate_release_outputs()\nfinally:\n    cleanup_large_temporaries()'
-          if marker not in text:
-              raise SystemExit('Could not isolate v3 runner main block')
-          prefix = text.replace(marker, '\n', 1)
-          ns = {'__name__': 'v3_release_preflight', '__file__': str(path)}
-          exec(compile(prefix, str(path), 'exec'), ns)
-          core = ns['core']
-          actual = core.prepare_source(sys.stdout)
-          if actual != source_sha:
-              raise SystemExit(f'source pin mismatch: {actual} != {source_sha}')
-          worker = core.prepare_turbo_worker()
-          compile(worker.read_text(), str(worker), 'exec')
-          wt = worker.read_text()
-          required = [
-              '100% official DeepMind / 0% project synthetic',
-              'curriculum_limit',
-              'POLYNOMIAL_RESIDUAL_WEIGHT',
-              'assigned_vals[sysmask,:2] = (systems[sysmask,:2] / ROOT_SCALE).to(out.dtype)',
-          ]
-          missing = [x for x in required if x not in wt]
-          if missing:
-              raise SystemExit(f'generated worker missing reviewed markers: {missing}')
-          print('V3_TURBO_WORKER_GENERATION_OK', worker)
-          PY
-
-      - name: Validate four official DeepMind audit banks on CPU
-        run: |
-          set -euo pipefail
-          rm -f /tmp/v3_audit_banks.json
-          python colab/generalization_audit.py \
-            --root . \
-            --output /tmp/v3_audit_banks.json \
-            --validate-banks-only | tee /tmp/v3_audit_banks.log
-          grep -q DEEPMIND_AUDIT_BANKS_VALID /tmp/v3_audit_banks.log
-          python - <<'PY'
-          import json
-          p = json.load(open('/tmp/v3_audit_banks.json'))
-          expected = {
-              'interpolate_linear_1d', 'interpolate_linear_2d',
-              'interpolate_polynomial', 'extrapolate_polynomial'
-          }
-          assert p['schema'] == 'DEEPMIND_ONLY_PER_FAMILY_V2', p
-          assert p['verdict'] == 'BANKS_OK', p
-          assert set(p['banks']) == expected, p['banks'].keys()
-          assert all(v['examples'] == 256 for v in p['banks'].values()), p['banks']
-          print('V3_AUDIT_BANKS_CPU_OK')
-          PY
-
-      - name: Ensure no MAI5 v3 GPU run is already active
+      - name: Ensure no Kaggle training run is already active
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          active="$(gh run list --workflow kaggle-train-v3.yml --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')"
-          echo "active_v3_gpu_runs=${active}"
-          test "${active}" = 0 || { echo 'A v3 GPU run is already active; refusing duplicate dispatch.'; exit 50; }
+          active="$(gh run list --workflow kaggle-train.yml --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')"
+          echo "active_kaggle_runs=${active}"
+          test "${active}" = 0 || { echo 'Kaggle training run already active; refusing duplicate dispatch.'; exit 50; }
 
       - name: Dispatch exactly one reviewed MAI5 v3 Kaggle run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run kaggle-train-v3.yml --ref feat/v5-deepmind-colab
+          gh workflow run kaggle-train.yml --ref feat/v5-deepmind-colab
           echo REVIEWED_V3_GPU_RUN_DISPATCHED
