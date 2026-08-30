@@ -39,6 +39,12 @@ from fractions import Fraction
 
 HERE = pathlib.Path(__file__).resolve().parent
 BASE = HERE / "train_v5_deepmind.py"
+if not BASE.exists():
+    candidate = pathlib.Path("/content/MathAI-v5-factory/colab/train_v5_deepmind.py")
+    if candidate.exists():
+        BASE = candidate
+if not BASE.exists():
+    raise RuntimeError(f"Base trainer not found: {BASE}")
 
 
 def banner(title):
