@@ -1,12 +1,12 @@
 package com.example.equationsolver.core
 
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Unified local equation engine.
- * Supports linear/quadratic single-variable equations and 2x2 linear systems.
- * It also produces human-readable solution steps and a simple equation type.
+ * Exact local solver for linear/quadratic equations and 2x2 linear systems.
+ * It is used as ground truth/comparison for these supported families.
  */
 object UniversalEquationSolver {
     private const val EPS = 1e-10
@@ -23,8 +23,10 @@ object UniversalEquationSolver {
         val first: Polynomial,
         val second: Polynomial = Polynomial()
     ) {
-        val maxDegree: Int = maxOf(if (abs(first.x2) > EPS) 2 else if (abs(first.x) > EPS) 1 else 0,
-            if (abs(second.x2) > EPS) 2 else if (abs(second.x) > EPS) 1 else 0)
+        val maxDegree: Int = maxOf(
+            if (abs(first.x2) > EPS) 2 else if (abs(first.x) > EPS || abs(first.y) > EPS) 1 else 0,
+            if (abs(second.x2) > EPS) 2 else if (abs(second.x) > EPS || abs(second.y) > EPS) 1 else 0
+        )
     }
 
     data class Result(
@@ -66,7 +68,7 @@ object UniversalEquationSolver {
                 else -> "معادلة خطية"
             }
         } catch (_: Exception) {
-            "صيغة غير معروفة"
+            "صيغة عامة"
         }
     }
 
@@ -77,7 +79,7 @@ object UniversalEquationSolver {
         val variable = if (abs(p.x) > EPS || abs(p.x2) > EPS) 'x' else 'y'
         if (abs(p.x2) > EPS && variable == 'x') {
             val d = p.x * p.x - 4.0 * p.x2 * p.c
-            if (d < -EPS) return Result("تربيعية", "لا يوجد حل حقيقي.", listOf("المميز Δ = %.6f".format(d), "بما أن Δ < 0 فلا توجد جذور حقيقية."))
+            if (d < -EPS) return Result("تربيعية", "لا يوجد حل حقيقي.", listOf("المميز Δ = ${fmt(d)}", "بما أن Δ < 0 فلا توجد جذور حقيقية."))
             if (abs(d) <= EPS) {
                 val root = -p.x / (2.0 * p.x2)
                 return Result("تربيعية", "x = ${fmt(root)}", listOf(
@@ -92,10 +94,10 @@ object UniversalEquationSolver {
             return Result("تربيعية", "x = ${fmt(r1)} أو x = ${fmt(r2)}", listOf(
                 "الصيغة: ax² + bx + c = 0",
                 "a = ${fmt(p.x2)}, b = ${fmt(p.x)}, c = ${fmt(p.c)}",
-                "Δ = %.6f".format(d),
+                "Δ = ${fmt(d)}",
                 "x₁ = ${fmt(r1)}",
                 "x₂ = ${fmt(r2)}"
-            ), x = r1)
+            ), x = if (abs(r1) <= abs(r2)) r1 else r2)
         }
         val coefficient = if (variable == 'x') p.x else p.y
         if (abs(coefficient) <= EPS) {
@@ -118,8 +120,9 @@ object UniversalEquationSolver {
             return if (same) Result("نظام خطي", "عدد لا نهائي من الحلول.", listOf("المعادلتان تمثلان نفس الخط."))
             else Result("نظام خطي", "لا يوجد حل.", listOf("المعادلتان متوازيتان ولا تتقاطعان."))
         }
-        val x = (e1.c * e2.y - e2.c * e1.y) / det
-        val y = (e1.x * e2.c - e2.x * e1.c) / det
+        // Parsed equations are a*x + b*y + c = 0, therefore the RHS is -c.
+        val x = (-e1.c * e2.y + e2.c * e1.y) / det
+        val y = (-e1.x * e2.c + e2.x * e1.c) / det
         return Result("نظام خطي", "x = ${fmt(x)}\ny = ${fmt(y)}", listOf(
             "لدينا معادلتان خطيتان.",
             "نحسب المحدد Δ = ${fmt(det)}.",
@@ -177,5 +180,5 @@ object UniversalEquationSolver {
 
     private fun Polynomial.maxVariableDegree(): Int = if (abs(x2) > EPS) 2 else if (abs(x) > EPS || abs(y) > EPS) 1 else 0
 
-    private fun fmt(value: Double): String = if (abs(value) < 1e-9) "0" else "%.6f".format(value).trimEnd('0').trimEnd('.')
+    private fun fmt(value: Double): String = if (abs(value) < 1e-9) "0" else String.format(Locale.US, "%.8f", value).trimEnd('0').trimEnd('.')
 }
