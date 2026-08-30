@@ -91,13 +91,14 @@ object UniversalEquationSolver {
             val s = sqrt(d)
             val r1 = (-p.x + s) / (2.0 * p.x2)
             val r2 = (-p.x - s) / (2.0 * p.x2)
+            val canonical = listOf(r1, r2).minWithOrNull(compareBy<Double> { abs(it) }.thenBy { it }) ?: r1
             return Result("تربيعية", "x = ${fmt(r1)} أو x = ${fmt(r2)}", listOf(
                 "الصيغة: ax² + bx + c = 0",
                 "a = ${fmt(p.x2)}, b = ${fmt(p.x)}, c = ${fmt(p.c)}",
                 "Δ = ${fmt(d)}",
                 "x₁ = ${fmt(r1)}",
                 "x₂ = ${fmt(r2)}"
-            ), x = if (abs(r1) <= abs(r2)) r1 else r2)
+            ), x = canonical)
         }
         val coefficient = if (variable == 'x') p.x else p.y
         if (abs(coefficient) <= EPS) {
@@ -120,7 +121,6 @@ object UniversalEquationSolver {
             return if (same) Result("نظام خطي", "عدد لا نهائي من الحلول.", listOf("المعادلتان تمثلان نفس الخط."))
             else Result("نظام خطي", "لا يوجد حل.", listOf("المعادلتان متوازيتان ولا تتقاطعان."))
         }
-        // Parsed equations are a*x + b*y + c = 0, therefore the RHS is -c.
         val x = (-e1.c * e2.y + e2.c * e1.y) / det
         val y = (-e1.x * e2.c + e2.x * e1.c) / det
         return Result("نظام خطي", "x = ${fmt(x)}\ny = ${fmt(y)}", listOf(
@@ -141,8 +141,7 @@ object UniversalEquationSolver {
     }
 
     private fun parsePolynomial(expression: String): Polynomial {
-        var s = expression.replace("*", "").replace(" ", "")
-            .replace("²", "^2").lowercase()
+        var s = expression.replace("*", "").replace(" ", "").replace("²", "^2").lowercase()
         require(s.isNotEmpty()) { "طرف المعادلة فارغ" }
         if (!s.startsWith("+") && !s.startsWith("-")) s = "+$s"
         val terms = Regex("[+-][^+-]+").findAll(s).map { it.value }.toList()
