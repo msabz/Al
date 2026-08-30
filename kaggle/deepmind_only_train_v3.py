@@ -7,6 +7,7 @@ per-family official-DeepMind audit contract.
 """
 
 import json
+import os
 import pathlib
 import re
 import urllib.request
@@ -15,12 +16,20 @@ SOURCE_COMMIT = "__SOURCE_COMMIT__"
 if not re.fullmatch(r"[0-9a-fA-F]{40}", SOURCE_COMMIT):
     raise RuntimeError(f"SOURCE_COMMIT injection invalid: {SOURCE_COMMIT!r}")
 
-WORK_DIR = pathlib.Path("/kaggle/working")
-WORK_DIR.mkdir(parents=True, exist_ok=True)
+KAGGLE_WORK = pathlib.Path("/kaggle/working")
+if KAGGLE_WORK.is_dir():
+    WORK_DIR = KAGGLE_WORK
+else:
+    WORK_DIR = pathlib.Path(os.environ.get("MATHAI_WORK_DIR", "/tmp/mathai-kaggle-preflight"))
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+
 BASE_URL = f"https://raw.githubusercontent.com/msabz/Al/{SOURCE_COMMIT}/kaggle/deepmind_only_train.py"
 BASE_PATH = WORK_DIR / "_deepmind_only_v2_library.py"
 urllib.request.urlretrieve(BASE_URL, BASE_PATH)
 base_text = BASE_PATH.read_text().replace("__SOURCE_COMMIT__", SOURCE_COMMIT)
+# The reviewed v2 wrapper hard-coded Kaggle paths. Preserve those paths on Kaggle,
+# but redirect them to a writable CPU-preflight directory everywhere else.
+base_text = base_text.replace("/kaggle/working", WORK_DIR.as_posix())
 
 main_block = "\n\ntry:\n    core.main()\nfinally:\n    cleanup_large_temporaries()"
 if main_block not in base_text:
