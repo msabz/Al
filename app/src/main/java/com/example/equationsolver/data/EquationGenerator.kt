@@ -85,6 +85,9 @@ object EquationGenerator {
             val c = nonZeroInt(-6, 7)
             val d = Random.nextInt(-12, 13)
             val k = nonZeroInt(-5, 6)
+            // If a == k*c, the equation collapses into an identity (or contradiction),
+            // making a single numeric target ambiguous. Never feed such labels to the NN.
+            if (a == k * c) continue
             if (abs(c * root + d) < 1e-9) continue
             val b = k * (c * root + d) - a * root
             return GeneratedExample("(${a}x${signed(b)})/(${c}x${signed(d.toDouble())})=$k", root, 0.0, "rational")
