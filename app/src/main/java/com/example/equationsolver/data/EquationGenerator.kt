@@ -110,7 +110,6 @@ object EquationGenerator {
     }
 
     private fun generateTrigonometric(): GeneratedExample {
-        // Restrict generated roots to sin's principal monotonic interval so the canonical answer is deterministic.
         val root = Random.nextInt(-14, 15).toDouble() / 10.0
         val rhs = sin(root)
         return GeneratedExample("sin(x)=${fmt(rhs, 8)}", root, 0.0, "trigonometric")
@@ -153,9 +152,10 @@ object EquationGenerator {
     }
 
     private fun signed(value: Double): String = if (value >= 0) "+${fmt(value)}" else fmt(value)
+
     private fun fmt(value: Double, digits: Int = 6): String {
         if (abs(value) < 1e-12) return "0"
         if (abs(value - value.toLong()) < 1e-10) return value.toLong().toString()
-        return String.format(Locale.US, ".%df".format(digits), value).trimEnd('0').trimEnd('.')
+        return String.format(Locale.US, "%.${digits}f", value).trimEnd('0').trimEnd('.')
     }
 }
