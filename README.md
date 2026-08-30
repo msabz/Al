@@ -1,15 +1,51 @@
-# EquationSolver AI
+# EquationSolver AI v3
 
-Hybrid neuro-symbolic Android equation solver using an exact local solver plus a lightweight neural model.
+On-device Android project for training a neural model to predict solutions of mathematical equations. Geometry is intentionally outside the training curriculum.
 
-## Current capabilities
-- Linear equations in `x` or `y`
-- 2x2 linear systems using `;` between equations
-- Quadratic equations in `x` using `x^2` or `x²`
-- Automatic equation-type detection
-- Human-readable solving steps
-- Local neural prediction and training with mini-batches
-- Synthetic training data for linear, quadratic, and system problems
-- Validation MSE reporting
+## Neural model
 
-The exact solver remains the ground truth for supported mathematics; the neural model learns numerical estimates and can be retrained locally.
+The prediction shown as **جواب النموذج** comes only from the neural network. The ground-truth solver is not called by `ModelManager.predict()`.
+
+Architecture tuned for sustained training on a mid-range Android phone:
+
+- Positional mathematical tokenizer, up to 72 tokens
+- Learned 24-dimensional token embeddings
+- Dense hidden layers: `128 -> 128 -> 64`
+- Numeric output: `[x, y]`
+- Adam optimizer
+- Mini-batch size: 24
+- Binary checkpoints include weights, embeddings, Adam moments, and optimizer step
+
+## Continuous curriculum
+
+Synthetic examples are generated indefinitely until the user stops training. Current families include:
+
+- Linear equations in `x` and `y`
+- 2x2 linear systems
+- Quadratic equations
+- Cubic equations
+- Rational equations
+- Radical/square-root equations
+- Exponential equations
+- Logarithmic equations
+- Absolute-value equations
+- Trigonometric `sin` equations
+
+Every generated example carries its known target and is independently substituted back into the equation before it is allowed into a training batch. This prevents a solver bug from silently poisoning the neural training labels.
+
+## Test screen
+
+The test screen deliberately shows two separate results:
+
+1. **الجواب الصحيح** — exact or numerical teacher result used only as a reference.
+2. **جواب النموذج** — neural prediction from the saved model.
+
+For equations with several real roots, the current fixed numeric model learns a deterministic principal root (the real root closest to zero, with the lower root used to break ties). The reference text may still display multiple valid roots.
+
+## Background training
+
+Training runs in a foreground service with a partial wake lock, periodic recoverable checkpoints, battery protection, and thermal pausing. It can continue when leaving the activity or turning the screen off. Android `Force stop` still stops the app by operating-system design.
+
+## CI
+
+Pull requests must run unit tests before the debug APK is built. Regression tests cover linear systems, `y` handling, quadratic principal-root selection, the general expression evaluator, and generated curriculum validity.
