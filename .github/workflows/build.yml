@@ -1,8 +1,6 @@
 name: Math AI v5 CI
 
 on:
-  push:
-    branches: [ "feat/v5-deepmind-colab" ]
   workflow_dispatch:
 
 jobs:
@@ -13,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate Colab factory Python syntax
-        run: python3 -m py_compile colab/train_v5_deepmind.py colab/one_click_factory.py
+        run: python3 -m py_compile colab/*.py
 
       - name: Set up JDK 11
         uses: actions/setup-java@v4
