@@ -1,8 +1,6 @@
 name: Math AI v5 CI
 
 on:
-  push:
-    branches: [ "feat/v5-deepmind-colab" ]
   workflow_dispatch:
 
 jobs:
@@ -12,8 +10,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate Colab factory Python syntax
-        run: python3 -m py_compile colab/*.py
+      - name: Validate Colab/Kaggle Python syntax
+        run: python3 -m py_compile colab/*.py kaggle/*.py
 
       - name: Set up JDK 11
         uses: actions/setup-java@v4
@@ -35,31 +33,3 @@ jobs:
         with:
           name: MathAI-v5-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Prepare optional release keystore
-        env:
-          V5_KEYSTORE_B64: ${{ secrets.V5_KEYSTORE_B64 }}
-        run: |
-          if [ -n "$V5_KEYSTORE_B64" ]; then
-            echo "$V5_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/math-ai-v5.jks"
-          fi
-
-      - name: Build signed release when secrets exist
-        env:
-          V5_KEYSTORE_PATH: ${{ runner.temp }}/math-ai-v5.jks
-          V5_KEYSTORE_PASSWORD: ${{ secrets.V5_KEYSTORE_PASSWORD }}
-          V5_KEY_ALIAS: ${{ secrets.V5_KEY_ALIAS }}
-          V5_KEY_PASSWORD: ${{ secrets.V5_KEY_PASSWORD }}
-        run: |
-          if [ -f "$V5_KEYSTORE_PATH" ]; then
-            ./gradlew assembleRelease --no-daemon --stacktrace
-          else
-            echo "Release signing secrets not configured; debug APK remains installable as .v5.debug"
-          fi
-
-      - name: Upload signed release if built
-        uses: actions/upload-artifact@v4
-        with:
-          name: MathAI-v5-release
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: ignore
