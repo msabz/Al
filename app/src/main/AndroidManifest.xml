@@ -13,7 +13,8 @@
         android:theme="@style/AppTheme">
         <service
             android:name=".ai.TrainingService"
-            android:exported="false" />
+            android:exported="false"
+            android:stopWithTask="false" />
         <receiver
             android:name=".ai.TrainingStopReceiver"
             android:exported="false" />
@@ -23,7 +24,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
         <activity android:name=".ReinforcementActivity" />
