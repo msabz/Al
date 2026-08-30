@@ -2,6 +2,7 @@ package com.example.equationsolver.ai
 
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.util.Arrays
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -16,13 +17,14 @@ class NeuralNetwork(
     private val maxTokens: Int = MathTokenizer.MAX_TOKENS,
     private val embeddingSize: Int = 24,
     private val hiddenSizes: IntArray = intArrayOf(128, 128, 64),
-    private val outputSize: Int = 2
+    private val outputSize: Int = 2,
+    private val random: Random = Random.Default
 ) {
     private val inputSize = maxTokens * embeddingSize
 
     private val embeddings = Array(vocabSize) { token ->
         if (token == 0) DoubleArray(embeddingSize)
-        else DoubleArray(embeddingSize) { (Random.nextDouble() * 2.0 - 1.0) * 0.05 }
+        else DoubleArray(embeddingSize) { (random.nextDouble() * 2.0 - 1.0) * 0.05 }
     }
     private val mE = Array(vocabSize) { DoubleArray(embeddingSize) }
     private val vE = Array(vocabSize) { DoubleArray(embeddingSize) }
@@ -33,13 +35,20 @@ class NeuralNetwork(
     private val vW = mutableListOf<Array<DoubleArray>>()
     private val mB = mutableListOf<DoubleArray>()
     private val vB = mutableListOf<DoubleArray>()
+    private val gradE: Array<DoubleArray>
+    private val gradW: List<Array<DoubleArray>>
+    private val gradB: List<DoubleArray>
     private var step = 0
+
+    @Volatile
+    var lastGradientNorm: Double = 0.0
+        private set
 
     init {
         var prev = inputSize
         for (size in hiddenSizes + outputSize) {
             val scale = sqrt(2.0 / prev)
-            weights += Array(prev) { DoubleArray(size) { (Random.nextDouble() * 2.0 - 1.0) * scale } }
+            weights += Array(prev) { DoubleArray(size) { (random.nextDouble() * 2.0 - 1.0) * scale } }
             biases += DoubleArray(size)
             mW += Array(prev) { DoubleArray(size) }
             vW += Array(prev) { DoubleArray(size) }
@@ -47,6 +56,9 @@ class NeuralNetwork(
             vB += DoubleArray(size)
             prev = size
         }
+        gradE = Array(vocabSize) { DoubleArray(embeddingSize) }
+        gradW = weights.map { layer -> Array(layer.size) { DoubleArray(layer[0].size) } }
+        gradB = biases.map { DoubleArray(it.size) }
     }
 
     @Synchronized
@@ -98,9 +110,7 @@ class NeuralNetwork(
     @Synchronized
     fun trainBatch(inputs: Array<IntArray>, targets: Array<DoubleArray>, learningRate: Double = 0.001): Double {
         require(inputs.isNotEmpty() && inputs.size == targets.size) { "دفعة التدريب غير صحيحة" }
-        val gradE = Array(vocabSize) { DoubleArray(embeddingSize) }
-        val gradW = weights.map { layer -> Array(layer.size) { DoubleArray(layer[0].size) } }
-        val gradB = biases.map { DoubleArray(it.size) }
+        clearGradients()
         var loss = 0.0
 
         for (sample in inputs.indices) {
@@ -144,6 +154,7 @@ class NeuralNetwork(
         }
 
         val invBatch = 1.0 / inputs.size
+        val clipScale = gradientClipScale(invBatch)
         step++
         val beta1 = 0.9
         val beta2 = 0.999
@@ -153,7 +164,7 @@ class NeuralNetwork(
 
         for (token in 1 until vocabSize) {
             for (d in 0 until embeddingSize) {
-                val g = gradE[token][d] * invBatch
+                val g = gradE[token][d] * invBatch * clipScale
                 mE[token][d] = beta1 * mE[token][d] + (1.0 - beta1) * g
                 vE[token][d] = beta2 * vE[token][d] + (1.0 - beta2) * g * g
                 val mh = mE[token][d] / correction1
@@ -164,7 +175,7 @@ class NeuralNetwork(
 
         for (l in weights.indices) {
             for (i in weights[l].indices) for (j in weights[l][i].indices) {
-                val g = gradW[l][i][j] * invBatch
+                val g = gradW[l][i][j] * invBatch * clipScale
                 mW[l][i][j] = beta1 * mW[l][i][j] + (1.0 - beta1) * g
                 vW[l][i][j] = beta2 * vW[l][i][j] + (1.0 - beta2) * g * g
                 val mh = mW[l][i][j] / correction1
@@ -172,7 +183,7 @@ class NeuralNetwork(
                 weights[l][i][j] -= learningRate * mh / (sqrt(vh) + epsilon)
             }
             for (j in biases[l].indices) {
-                val g = gradB[l][j] * invBatch
+                val g = gradB[l][j] * invBatch * clipScale
                 mB[l][j] = beta1 * mB[l][j] + (1.0 - beta1) * g
                 vB[l][j] = beta2 * vB[l][j] + (1.0 - beta2) * g * g
                 val mh = mB[l][j] / correction1
@@ -182,6 +193,71 @@ class NeuralNetwork(
         }
         return loss / (inputs.size * outputSize)
     }
+
+    private fun clearGradients() {
+        gradE.forEach { Arrays.fill(it, 0.0) }
+        gradW.forEach { layer -> layer.forEach { Arrays.fill(it, 0.0) } }
+        gradB.forEach { Arrays.fill(it, 0.0) }
+    }
+
+    private fun gradientClipScale(invBatch: Double): Double {
+        var squaredNorm = 0.0
+        for (token in 1 until vocabSize) for (value in gradE[token]) {
+            val gradient = value * invBatch
+            squaredNorm += gradient * gradient
+        }
+        for (layer in gradW) for (row in layer) for (value in row) {
+            val gradient = value * invBatch
+            squaredNorm += gradient * gradient
+        }
+        for (layer in gradB) for (value in layer) {
+            val gradient = value * invBatch
+            squaredNorm += gradient * gradient
+        }
+        lastGradientNorm = sqrt(squaredNorm)
+        return if (lastGradientNorm > MAX_GRADIENT_NORM) MAX_GRADIENT_NORM / lastGradientNorm else 1.0
+    }
+
+    data class Evaluation(
+        val meanSquaredError: Double,
+        val meanAbsoluteError: Double,
+        val withinToleranceRatio: Double,
+        val valueCount: Int
+    )
+
+    /** Evaluates only meaningful x/y outputs selected by each sample mask. */
+    @Synchronized
+    fun evaluate(
+        inputs: List<IntArray>,
+        targets: List<DoubleArray>,
+        activeOutputs: List<BooleanArray>,
+        tolerance: Double
+    ): Evaluation {
+        require(inputs.size == targets.size && inputs.size == activeOutputs.size) { "بيانات التحقق غير متطابقة" }
+        var squared = 0.0
+        var absolute = 0.0
+        var within = 0
+        var count = 0
+        for (sample in inputs.indices) {
+            val prediction = forwardWithCache(inputs[sample]).prediction
+            for (output in prediction.indices) {
+                if (!activeOutputs[sample].getOrElse(output) { false }) continue
+                val error = kotlin.math.abs(prediction[output] - targets[sample][output])
+                squared += error * error
+                absolute += error
+                if (error <= tolerance) within++
+                count++
+            }
+        }
+        if (count == 0) return Evaluation(Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0)
+        return Evaluation(squared / count, absolute / count, within.toDouble() / count, count)
+    }
+
+    fun parameterCount(): Int = embeddings.sumOf { it.size } +
+        weights.sumOf { layer -> layer.sumOf { it.size } } + biases.sumOf { it.size }
+
+    @Synchronized
+    fun optimizerStep(): Int = step
 
     @Synchronized
     fun meanSquaredError(inputs: List<IntArray>, targets: List<DoubleArray>): Double {
@@ -240,5 +316,8 @@ class NeuralNetwork(
     private fun writeVector(out: DataOutputStream, vector: DoubleArray) { for (value in vector) out.writeDouble(value) }
     private fun readVector(input: DataInputStream, vector: DoubleArray) { for (i in vector.indices) vector[i] = input.readDouble() }
 
-    companion object { private const val MAGIC = 0x45514E34 }
+    companion object {
+        private const val MAGIC = 0x45514E34
+        private const val MAX_GRADIENT_NORM = 5.0
+    }
 }

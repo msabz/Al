@@ -6,6 +6,13 @@ import com.example.equationsolver.core.ArabicEquationNormalizer
 object MathTokenizer {
     const val MAX_TOKENS = 72
 
+    data class Encoding(
+        val tokens: IntArray,
+        val tokenCount: Int,
+        val unknownCount: Int,
+        val truncated: Boolean
+    )
+
     private val vocabulary = listOf(
         "<pad>", "<unk>",
         "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
@@ -17,7 +24,9 @@ object MathTokenizer {
 
     val vocabSize: Int get() = vocabulary.size
 
-    fun tokenize(input: String): IntArray {
+    fun tokenize(input: String): IntArray = encode(input).tokens
+
+    fun encode(input: String): Encoding {
         val normalized = ArabicEquationNormalizer.normalize(input)
             .lowercase()
             .replace("π", "pi")
@@ -27,8 +36,11 @@ object MathTokenizer {
 
         val result = IntArray(MAX_TOKENS)
         var out = 0
+        var tokenCount = 0
+        var unknownCount = 0
+        var truncated = false
         var i = 0
-        while (i < normalized.length && out < MAX_TOKENS) {
+        while (i < normalized.length) {
             val ch = normalized[i]
             if (ch.isWhitespace()) {
                 i++
@@ -37,7 +49,8 @@ object MathTokenizer {
 
             val named = namedTokens.firstOrNull { token -> normalized.startsWith(token, i) }
             if (named != null) {
-                result[out++] = ids.getValue(named)
+                tokenCount++
+                if (out < MAX_TOKENS) result[out++] = ids.getValue(named) else truncated = true
                 i += named.length
                 continue
             }
@@ -51,9 +64,12 @@ object MathTokenizer {
                 ch in charArrayOf('+', '-', '*', '/', '^', '=', ';', '(', ')') -> ch.toString()
                 else -> null
             }
-            result[out++] = ids[token] ?: 1
+            val id = ids[token] ?: 1
+            tokenCount++
+            if (id == 1) unknownCount++
+            if (out < MAX_TOKENS) result[out++] = id else truncated = true
             i++
         }
-        return result
+        return Encoding(result, tokenCount, unknownCount, truncated)
     }
 }

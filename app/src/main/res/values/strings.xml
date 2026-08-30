@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">مختبر النموذج الرياضي</string>
+    <string name="dashboard_title">نموذج رياضي يتعلّم على هاتفك</string>
+    <string name="dashboard_subtitle">تدريب عصبي محلي بالكامل • بلا إنترنت • مضبوط لـ Samsung A16</string>
+    <string name="neural_only_badge">NEURAL-ONLY PREDICTION</string>
+    <string name="train_model">تدريب النموذج</string>
+    <string name="test_model">اختبار النموذج</string>
+    <string name="guided_training">تدريب موجّه</string>
+    <string name="start_training">بدء التدريب المستمر</string>
+    <string name="stop_and_save">إيقاف وحفظ</string>
+    <string name="import_training_file">استيراد ملف تدريب TXT</string>
+    <string name="solve_and_compare">قارن الجوابين</string>
+    <string name="clear">مسح</string>
+    <string name="back">رجوع</string>
+    <string name="next_equation">معادلة جديدة موثّقة</string>
+    <string name="answer_close">الجواب قريب — تعزيز خفيف</string>
+    <string name="answer_wrong">الجواب خاطئ — تصحيح قوي</string>
+</resources>

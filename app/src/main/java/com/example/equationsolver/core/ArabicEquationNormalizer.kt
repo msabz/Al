@@ -14,6 +14,7 @@ object ArabicEquationNormalizer {
             .replace('−', '-')
             .replace('×', '*')
             .replace('÷', '/')
+            .replace('٫', '.')
             .replace("يساوي", "=")
             .replace("مساوي", "=")
             .replace("يساوى", "=")
@@ -32,6 +33,24 @@ object ArabicEquationNormalizer {
             .replace("إكس", "x")
             .replace("واي", "y")
             .replace("واى", "y")
+            .replace("س", "x")
+            .replace("ص", "y")
+
+        val arabicDigits = "٠١٢٣٤٥٦٧٨٩"
+        val persianDigits = "۰۱۲۳۴۵۶۷۸۹"
+        s = buildString(s.length) {
+            for (ch in s) {
+                val arabicIndex = arabicDigits.indexOf(ch)
+                val persianIndex = persianDigits.indexOf(ch)
+                append(
+                    when {
+                        arabicIndex >= 0 -> ('0'.code + arabicIndex).toChar()
+                        persianIndex >= 0 -> ('0'.code + persianIndex).toChar()
+                        else -> ch
+                    }
+                )
+            }
+        }
 
         s = s.replace(Regex("\\s+"), "")
         return s

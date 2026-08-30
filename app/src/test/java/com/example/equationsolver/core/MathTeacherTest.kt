@@ -5,6 +5,12 @@ import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class MathTeacherTest {
+    @Test fun solvesArabicDigitsAndVariableAlias() {
+        val answer = MathTeacher.solve("٢س+٤=١٠")
+        assertNotNull(answer.x)
+        assertEquals(3.0, answer.x!!, 1e-9)
+    }
+
     @Test fun findsCubicPrincipalRoot() {
         val answer = MathTeacher.solve("x^3-6x^2+11x-6=0")
         assertNotNull(answer.x)

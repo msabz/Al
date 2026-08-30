@@ -1,52 +1,78 @@
-# EquationSolver AI v3
+# Math AI Lab v4
 
-On-device Android project for training a neural model to predict solutions of mathematical equations. Geometry is intentionally outside the training curriculum.
+تطبيق Android يدرّب نموذجًا عصبيًا حقيقيًا محليًا على مسائل المعادلات الرياضية، من دون مكتبات تعلم آلي ومن دون خادم أو اتصال بالإنترنت. صُمّم ملف التشغيل الافتراضي للتدريب المستمر على Samsung Galaxy A16 مع حماية البطارية والحرارة.
 
-## Neural model
+## ما الذي يجعل التدريب حقيقيًا؟
 
-The prediction shown as **جواب النموذج** comes only from the neural network. The ground-truth solver is not called by `ModelManager.predict()`.
+- `ModelManager.predict()` يستدعي الـ tokenizer ثم أوزان `NeuralNetwork` فقط.
+- كل دفعة تنفّذ forward pass ثم backpropagation وتحديث Adam للأوزان وembeddings والانحيازات.
+- اختبار الوحدة `NeuralNetworkTest` يثبت أن التنبؤ يتغير وأن الخسارة تنخفض بعد تحديثات gradients.
+- الحل الرياضي المرجعي لا يدخل مسار تنبؤ النموذج؛ يُستخدم لبناء أهداف صحيحة ولعرض مقارنة منفصلة فقط.
+- يحفظ الـ checkpoint الأوزان، embeddings، لحظات Adam، وعدد خطوات optimizer، ثم يستأنف منها بدل البدء من الصفر.
 
-Architecture tuned for sustained training on a mid-range Android phone:
+## بنية النموذج
 
-- Positional mathematical tokenizer, up to 72 tokens
-- Learned 24-dimensional token embeddings
-- Dense hidden layers: `128 -> 128 -> 64`
-- Numeric output: `[x, y]`
-- Adam optimizer
-- Mini-batch size: 24
-- Binary checkpoints include weights, embeddings, Adam moments, and optimizer step
+- Tokenizer رياضي موضعي: حتى 72 token
+- Embedding متعلّم: 24 بعدًا
+- Dense neural layers: `128 → 128 → 64 → 2`
+- الخرج العددي: `[x, y]`
+- 247,026 معاملًا قابلًا للتعلم
+- Adam مع global gradient clipping
+- Batch بحجم 16 لتقليل ضغط الذاكرة والـ GC على A16
 
-## Continuous curriculum
+النموذج ينتج جذرًا رئيسيًا واحدًا ثابتًا عندما يكون للمعادلة عدة جذور حقيقية. هذا قيد مقصود للخرج العددي الثابت، وليس ادعاءً بأن النموذج الصغير يمثّل كل حلول كل فروع الرياضيات.
 
-Synthetic examples are generated indefinitely until the user stops training. Current families include:
+## المنهج اللامتناهي
 
-- Linear equations in `x` and `y`
-- 2x2 linear systems
-- Quadratic equations
-- Cubic equations
-- Quartic equations
-- Rational equations
-- Radical/square-root equations
-- Exponential equations using both `exp(...)` and `a^x`
-- Natural-log and base-10 logarithmic equations (`ln`, `log`)
-- Absolute-value equations
-- Trigonometric equations using `sin`, `cos`, and `tan`
+يولّد التطبيق أمثلة جديدة حتى يوقفه المستخدم، ويتحقق من كل هدف بالتعويض قبل التدريب:
 
-Every generated example carries its known target and is independently substituted back into the equation before it is allowed into a training batch. This prevents a solver bug from silently poisoning the neural training labels.
+- معادلات خطية بصيغ طرف واحد، طرفين، وأقواس، في `x` أو `y`
+- أنظمة خطية `2×2`
+- كثيرات حدود موسّعة أو محللة حتى الدرجة الخامسة
+- معادلات كسرية وجذرية
+- أسية بـ `exp(...)` أو `a^x`
+- لوغاريتمية بـ `ln(...)` و`log(...)`
+- قيمة مطلقة
+- مثلثية بـ `sin` و`cos` و`tan`
 
-## Test screen
+الهندسة غير داخلة في المنهج. المعادلات غير الخطية متعددة المتغيرات والخرج الذي يحتاج عددًا متغيرًا من الجذور ليست ضمن عقد النموذج الحالي.
 
-The test screen deliberately shows two separate results:
+## قياس الجودة بلا تضليل
 
-1. **الجواب الصحيح** — exact or numerical teacher result used only as a reference.
-2. **جواب النموذج** — neural prediction from the saved model.
+- توجد مجموعة holdout ثابتة من 160 مثالًا مولدة ببذرة ثابتة.
+- هذه المعادلات مستبعدة صراحة من التدريب المستمر.
+- تعرض الشاشة Train MSE، وHoldout RMSE بوحدة الحل الفعلية، ومتوسط الخطأ، ونسبة القيم التي خطؤها لا يتجاوز ±1.
+- لا تُستخدم خسارة دفعة عشوائية متغيرة وحدها للحكم على تحسن النموذج.
 
-For equations with several real roots, the current fixed numeric model learns a deterministic principal root: the real root closest to zero, with the lower numeric root used to break equal-distance ties. The reference text may still display several valid roots.
+## ضبط Samsung A16
 
-## Background training
+- foreground service مستقل عن الشاشات مع partial wake lock
+- تأخير متكيف: أسرع أثناء الشحن وأهدأ على البطارية
+- توقف تلقائي عند حرارة `MODERATE` أو أعلى
+- توقف تلقائي عند بطارية 20% أو أقل
+- تخفيف إضافي في وضع توفير الطاقة أو الحرارة الخفيفة
+- checkpoint كل خمس دقائق، وعند الإيقاف، ومع نسخة استرجاع سابقة
+- إعادة تشغيل التدريب بعد الإقلاع فقط إذا كان المستخدم قد تركه مفعّلًا
 
-Training runs in a foreground service with a partial wake lock, periodic recoverable checkpoints, battery protection, and thermal pausing. It can continue when leaving the activity or turning the screen off. Android `Force stop` still stops the app by operating-system design.
+Android Force stop يوقف التطبيق والخدمة بحكم النظام، ولا يمكن لأي تطبيق عادي تجاوز ذلك.
 
-## CI
+## التدريب من ملف
 
-Pull requests must run unit tests before the debug APK is built. Regression tests cover linear systems, `y` handling, quadratic principal-root selection, general numerical principal roots, the expression evaluator, and generated curriculum validity.
+صيغة السطر:
+
+```text
+2x+4=10 | 3,0
+2x+3y=5;x-y=1 | 1.6,0.6
+sin(x)=0.47942554 | 0.5,0
+```
+
+يمكن حذف الجزء بعد `|` ليحسب المصحح الهدف المدعوم. السطر ذو الهدف غير المحدود أو الذي لا يحقق المعادلة يُرفض قبل دخوله التدريب. تُقرأ الملفات الكبيرة على دفعات من 2,000 سطر بدل تحميلها كاملة في RAM.
+
+## البناء
+
+```bash
+./gradlew testDebugUnitTest
+./gradlew assembleDebug
+```
+
+يرفع GitHub Actions ملف `EquationSolver-APK` بعد نجاح الاختبارات والبناء.

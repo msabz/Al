@@ -9,8 +9,10 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.Process
 import androidx.core.app.NotificationCompat
 import com.example.equationsolver.MainActivity
+import com.example.equationsolver.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,11 +30,19 @@ class TrainingService : Service() {
         const val ACTION_STOP = "com.example.equationsolver.STOP_TRAINING"
         const val ACTION_PROGRESS = "com.example.equationsolver.TRAINING_PROGRESS"
         const val ACTION_PAUSED = "com.example.equationsolver.TRAINING_PAUSED"
+        const val ACTION_ERROR = "com.example.equationsolver.TRAINING_ERROR"
+        const val ACTION_STOPPED = "com.example.equationsolver.TRAINING_STOPPED"
         const val EXTRA_SAMPLES = "samples"
         const val EXTRA_BATCHES = "batches"
         const val EXTRA_EPOCH = "epoch"
         const val EXTRA_LOSS = "loss"
         const val EXTRA_VALIDATION = "validation"
+        const val EXTRA_VALIDATION_RMSE = "validation_rmse"
+        const val EXTRA_VALIDATION_MAE = "validation_mae"
+        const val EXTRA_ACCURACY = "accuracy"
+        const val EXTRA_EQUATION = "equation"
+        const val EXTRA_FAMILY = "family"
+        const val EXTRA_GRADIENT_NORM = "gradient_norm"
         const val EXTRA_REASON = "reason"
         private const val CHANNEL_ID = "continuous_training"
         private const val NOTIFICATION_ID = 2201
@@ -56,10 +66,21 @@ class TrainingService : Service() {
                 stopTrainingAndSelf()
                 START_NOT_STICKY
             }
-            ACTION_START, null -> {
+            ACTION_START -> {
                 ModelManager.setTrainingEnabled(applicationContext, true)
                 startTrainingIfNeeded()
                 START_STICKY
+            }
+            null -> {
+                if (ModelManager.isTrainingEnabled(applicationContext)) {
+                    startTrainingIfNeeded()
+                    START_STICKY
+                } else {
+                    releaseWakeLock()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    START_NOT_STICKY
+                }
             }
             else -> START_STICKY
         }
@@ -68,22 +89,33 @@ class TrainingService : Service() {
     private fun startTrainingIfNeeded() {
         if (job?.isActive == true) return
         job = scope.launch {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             while (isActive && ModelManager.isTrainingEnabled(applicationContext)) {
                 try {
-                    TrainingEngine.trainContinuous(applicationContext, learningRate = 0.0007) {
-                            samples, batches, epoch, loss, validation, paused, reason ->
-                        if (paused) {
-                            updateNotification("متوقف مؤقتًا: $reason")
-                            sendBroadcast(Intent(ACTION_PAUSED).setPackage(packageName).putExtra(EXTRA_REASON, reason))
+                    TrainingEngine.trainContinuous(applicationContext, learningRate = 0.0007) { state ->
+                        if (state.paused) {
+                            updateNotification("متوقف مؤقتًا: ${state.reason}")
+                            sendBroadcast(Intent(ACTION_PAUSED).setPackage(packageName).putExtra(EXTRA_REASON, state.reason))
                         } else {
-                            updateNotification("%,d معادلة | Loss %.6f".format(samples, loss))
+                            val metric = if (state.validation.rmse.isFinite()) {
+                                "RMSE %.2f".format(state.validation.rmse)
+                            } else if (state.loss.isFinite()) {
+                                "Loss %.6f".format(state.loss)
+                            } else "تهيئة أول دفعة"
+                            updateNotification("%,d معادلة | %s".format(state.samples, metric))
                             sendBroadcast(
                                 Intent(ACTION_PROGRESS).setPackage(packageName)
-                                    .putExtra(EXTRA_SAMPLES, samples)
-                                    .putExtra(EXTRA_BATCHES, batches)
-                                    .putExtra(EXTRA_EPOCH, epoch)
-                                    .putExtra(EXTRA_LOSS, loss)
-                                    .putExtra(EXTRA_VALIDATION, validation)
+                                    .putExtra(EXTRA_SAMPLES, state.samples)
+                                    .putExtra(EXTRA_BATCHES, state.batches)
+                                    .putExtra(EXTRA_EPOCH, state.curriculumRound)
+                                    .putExtra(EXTRA_LOSS, state.loss)
+                                    .putExtra(EXTRA_VALIDATION, state.validation.normalizedMse)
+                                    .putExtra(EXTRA_VALIDATION_RMSE, state.validation.rmse)
+                                    .putExtra(EXTRA_VALIDATION_MAE, state.validation.meanAbsoluteError)
+                                    .putExtra(EXTRA_ACCURACY, state.validation.withinOneUnitRatio)
+                                    .putExtra(EXTRA_EQUATION, state.lastEquation)
+                                    .putExtra(EXTRA_FAMILY, state.lastFamily)
+                                    .putExtra(EXTRA_GRADIENT_NORM, state.gradientNorm)
                             )
                         }
                     }
@@ -91,6 +123,10 @@ class TrainingService : Service() {
                     throw e
                 } catch (e: Exception) {
                     updateNotification("خطأ تدريب؛ ستتم إعادة المحاولة تلقائيًا")
+                    sendBroadcast(
+                        Intent(ACTION_ERROR).setPackage(packageName)
+                            .putExtra(EXTRA_REASON, e.message ?: "خطأ تدريب غير معروف")
+                    )
                     delay(5000L)
                 }
             }
@@ -103,10 +139,7 @@ class TrainingService : Service() {
         job = null
         scope.launch {
             activeJob?.cancelAndJoin()
-            val state = TrainingEngine.snapshot()
-            try {
-                ModelManager.save(applicationContext, state.samples, state.batches, state.bestValidationMse, state.loss)
-            } catch (_: Exception) { }
+            sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -142,7 +175,7 @@ class TrainingService : Service() {
         val openPending = PendingIntent.getActivity(this, 2203, Intent(this, MainActivity::class.java), flags)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Equation Solver AI")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setContentIntent(openPending)
             .addAction(android.R.drawable.ic_media_pause, "إيقاف وحفظ", stopPending)
