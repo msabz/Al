@@ -1,0 +1,40 @@
+name: Kaggle Quality Diagnose v5
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths:
+      - ".github/workflows/kaggle-quality-diag.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Print quality metrics only
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p diag
+          kaggle kernels output musabalzoubi/math-ai-v5-turbo-trainer -p diag -o --page-size 50 --file-pattern '.*(generalization_audit\.json|training_report\.json|LEARNING_EVIDENCE\.txt|training_console\.log)$' || true
+          echo '=== GENERALIZATION AUDIT ==='
+          f="$(find diag -type f -name generalization_audit.json -print -quit)"
+          [ -n "$f" ] && cat "$f"
+          echo '=== TRAINING REPORT ==='
+          f="$(find diag -type f -name training_report.json -print -quit)"
+          [ -n "$f" ] && cat "$f"
+          echo '=== LEARNING EVIDENCE ==='
+          f="$(find diag -type f -name LEARNING_EVIDENCE.txt -print -quit)"
+          [ -n "$f" ] && cat "$f"
+          echo '=== TRAINING TAIL ==='
+          f="$(find diag -type f -name training_console.log -print -quit)"
+          [ -n "$f" ] && tail -n 160 "$f"
