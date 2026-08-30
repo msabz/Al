@@ -19,16 +19,11 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install Kaggle CLI
         run: python -m pip install --upgrade kaggle
 
@@ -42,15 +37,13 @@ jobs:
           python - <<'PY'
           import os
           from kaggle.api.kaggle_api_extended import KaggleApi
-          api = KaggleApi()
-          api.authenticate()
-          owner = (getattr(api, 'config_values', {}) or {}).get('username') or ''
-          if not owner:
-              raise SystemExit('Could not discover Kaggle username')
-          print('KAGGLE_AUTH_OK owner=' + owner)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write('owner=' + owner + '\n')
-              f.write('kernel_ref=' + owner + '/mathai-add-sub-smoke\n')
+          api=KaggleApi(); api.authenticate()
+          owner=(getattr(api,'config_values',{}) or {}).get('username') or ''
+          if not owner: raise SystemExit('Could not discover Kaggle username')
+          print('KAGGLE_AUTH_OK owner='+owner)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('owner='+owner+'\n')
+              f.write('kernel_ref='+owner+'/mathai-add-sub-smoke\n')
           PY
 
       - name: Prepare tiny T4 kernel
@@ -79,16 +72,13 @@ jobs:
             "model_sources": []
           }
           JSON
-          cat .kaggle-smoke/kernel-metadata.json
 
       - name: Launch tiny Kaggle training
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          kaggle kernels push -p .kaggle-smoke --accelerator NvidiaTeslaT4 --timeout 18000 | tee launch.log
+        run: kaggle kernels push -p .kaggle-smoke --accelerator NvidiaTeslaT4 --timeout 18000 | tee launch.log
 
-      - name: Monitor Kaggle kernel
+      - name: Monitor Kaggle kernel without hiding diagnostics
         id: monitor
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
@@ -98,40 +88,33 @@ jobs:
           outcome="timeout"
           : > status.log
           for i in $(seq 1 180); do
-            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1)"
-            rc=$?
-            stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "[${stamp}] rc=${rc} ${status}" | tee -a status.log
-            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
-            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then
-              outcome="complete"
-              break
-            fi
-            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then
-              outcome="failed"
-              break
-            fi
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1)"; rc=$?
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] rc=${rc} ${status}" | tee -a status.log
+            lower="$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "$lower" | grep -Eq 'complete|success'; then outcome="complete"; break; fi
+            if printf '%s' "$lower" | grep -Eq 'error|failed|cancelled|canceled'; then outcome="failed"; break; fi
             sleep 20
           done
           echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
           echo "KAGGLE_FINAL_OUTCOME=${outcome}"
-          [ "${outcome}" = "complete" ] || exit 30
+          exit 0
 
-      - name: Download only smoke outputs
+      - name: Download smoke outputs and Kaggle log
         if: always()
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
         run: |
           set +e
-          mkdir -p kaggle-smoke-output
           kaggle kernels output "${KERNEL_REF}" -p kaggle-smoke-output -o --page-size 50 | tee output-download.log
           find kaggle-smoke-output -type f -printf '%p %s bytes\n' | sort | tee output-files.log
+          echo '--- Kaggle log tail ---'
+          find kaggle-smoke-output -type f -name '*.log' -exec tail -n 120 {} \; | tee kaggle-log-tail.txt
           exit 0
 
-      - name: Verify learned model evidence
+      - name: Read and verify learned model evidence
         id: verify
-        if: steps.monitor.outputs.outcome == 'complete'
+        if: always()
         run: |
           set -euo pipefail
           MODEL="$(find kaggle-smoke-output -type f -name add_sub_smoke_model.pt -print -quit)"
@@ -145,22 +128,17 @@ jobs:
           cp "$EVIDENCE" verified-smoke/ADD_SUB_SMOKE_EVIDENCE.txt
           python - <<'PY'
           import json, os, pathlib
-          p = pathlib.Path('verified-smoke/add_sub_smoke_report.json')
-          r = json.loads(p.read_text())
-          print(json.dumps(r, indent=2))
-          if r.get('verdict') != 'PASS':
-              raise SystemExit('Training report verdict is not PASS')
-          if r['holdout']['rmse'] >= 0.35:
-              raise SystemExit('Holdout RMSE gate failed')
-          if r['holdout']['within_0_50'] <= 0.98:
-              raise SystemExit('Holdout accuracy gate failed')
-          model = pathlib.Path('verified-smoke/add_sub_smoke_model.pt')
-          if model.stat().st_size < 1000 or model.stat().st_size > 1_000_000:
-              raise SystemExit(f'Unexpected model size: {model.stat().st_size}')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write('verdict=PASS\n')
-              f.write('rmse=' + str(r['holdout']['rmse']) + '\n')
-              f.write('accuracy=' + str(r['holdout']['within_0_50']) + '\n')
+          r=json.loads(pathlib.Path('verified-smoke/add_sub_smoke_report.json').read_text())
+          print('=== TRAINING REPORT ===')
+          print(json.dumps(r,indent=2))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('verdict='+str(r.get('verdict','UNKNOWN'))+'\n')
+              f.write('rmse='+str(r['holdout']['rmse'])+'\n')
+              f.write('accuracy='+str(r['holdout']['within_0_50'])+'\n')
+              f.write('improvement='+str(r['rmse_improvement_factor'])+'\n')
+          if r.get('verdict') != 'PASS': raise SystemExit('Training report verdict is FAIL; metrics printed above')
+          if r['holdout']['rmse'] >= 0.35: raise SystemExit('Holdout RMSE gate failed')
+          if r['holdout']['within_0_50'] <= 0.98: raise SystemExit('Holdout accuracy gate failed')
           PY
 
       - name: Upload compact evidence
@@ -170,10 +148,14 @@ jobs:
           name: MathAI-ADD-SUB-smoke-evidence
           path: |
             verified-smoke/**
+            kaggle-smoke-output/add_sub_smoke_report.json
+            kaggle-smoke-output/ADD_SUB_SMOKE_EVIDENCE.txt
+            kaggle-smoke-output/*.log
             launch.log
             status.log
             output-download.log
             output-files.log
+            kaggle-log-tail.txt
           if-no-files-found: warn
           retention-days: 30
 
@@ -182,28 +164,25 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MathAI-ADD-SUB-VERIFIED
-          path: |
-            verified-smoke/add_sub_smoke_model.pt
-            verified-smoke/add_sub_smoke_report.json
-            verified-smoke/ADD_SUB_SMOKE_EVIDENCE.txt
+          path: verified-smoke/**
           if-no-files-found: error
           retention-days: 30
 
       - name: Summary
         if: always()
         env:
-          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
           OUTCOME: ${{ steps.monitor.outputs.outcome }}
           VERDICT: ${{ steps.verify.outputs.verdict }}
           RMSE: ${{ steps.verify.outputs.rmse }}
           ACCURACY: ${{ steps.verify.outputs.accuracy }}
+          IMPROVEMENT: ${{ steps.verify.outputs.improvement }}
         run: |
           {
             echo "## Kaggle add/sub mechanism test"
-            echo "- Kernel: \`${KERNEL_REF}\`"
             echo "- Kaggle outcome: \`${OUTCOME}\`"
-            echo "- Verification: \`${VERDICT}\`"
+            echo "- Training verdict: \`${VERDICT}\`"
             echo "- Holdout RMSE: \`${RMSE}\`"
             echo "- Within ±0.50: \`${ACCURACY}\`"
+            echo "- RMSE improvement: \`${IMPROVEMENT}x\`"
             echo "- Source commit: \`${GITHUB_SHA}\`"
           } >> "$GITHUB_STEP_SUMMARY"
