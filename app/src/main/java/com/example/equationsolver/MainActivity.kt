@@ -61,12 +61,17 @@ class MainActivity : AppCompatActivity() {
             TrainingEngine.isExternalFileSessionActive() -> "● تدريب ملف خارجي يعمل الآن"
             ModelManager.isTrainingEnabled(this) -> "● تدريب v5 البنيوي يعمل في الخلفية"
             samples > 0 -> "نموذج v5 محفوظ وجاهز للمتابعة"
+            info.bootstrappedFromAsset -> "نموذج Colab المدمج جاهز — يمكنك الاختبار أو متابعة التدريب"
             else -> "نموذج v5 جديد — ابدأ التدريب أو استورد MAI5 من Colab"
         }
         val checkpoint = if (info.checkpointBytes > 0L) "%.1f MB".format(Locale.US, info.checkpointBytes / 1_048_576.0) else "غير محفوظ بعد"
         val stateAcc = if (validation.stateAccuracy.isFinite()) " • دقة حالة الحل %.0f%%".format(Locale.US, validation.stateAccuracy * 100.0) else ""
-        val imported = if (info.importedAt > 0L) " • أوزان Colab/MAI5 مستوردة" else ""
+        val source = when {
+            info.importedAt > 0L -> " • MAI5 مستورد يدويًا"
+            info.bootstrappedFromAsset -> " • أوزان Colab مدمجة بالـAPK"
+            else -> ""
+        }
         findViewById<TextView>(R.id.textModelDetails).text =
-            "%,d معامل • %,d خطوة Adam%s\nCheckpoint: %s%s".format(Locale.US, info.parameterCount, info.optimizerStep, stateAcc, checkpoint, imported)
+            "%,d معامل • %,d خطوة Adam%s\nCheckpoint: %s%s".format(Locale.US, info.parameterCount, info.optimizerStep, stateAcc, checkpoint, source)
     }
 }
