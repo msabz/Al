@@ -7,20 +7,23 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import kotlin.math.abs
 
+/** Owns the v5 checkpoint and provides a stable import/export bridge to Colab. */
 object ModelManager {
-    private const val PREFS = "equation_solver_model_v4"
-    private const val MODEL_FILE = "equation_model_v4.bin"
+    private const val PREFS = "math_ai_model_v5"
+    private const val MODEL_FILE = "math_ai_model_v5.mai5"
     private const val KEY_SAMPLES = "training_samples"
     private const val KEY_BATCHES = "training_batches"
-    private const val KEY_BEST_VAL = "best_validation_active_mse_v2"
-    private const val KEY_LAST_VAL = "last_validation_active_mse_v2"
-    private const val KEY_VAL_ACCURACY = "last_validation_within_one_v2"
+    private const val KEY_BEST_VAL = "best_validation_mse"
+    private const val KEY_LAST_VAL = "last_validation_mse"
+    private const val KEY_VAL_ACCURACY = "last_validation_accuracy"
     private const val KEY_TRAINING_ENABLED = "training_enabled"
     private const val KEY_LAST_LOSS = "last_loss"
     private const val KEY_CHECKPOINT_TIME = "checkpoint_time"
-    private const val OUTPUT_SCALE = 100.0
+    private const val KEY_IMPORTED_AT = "imported_at"
 
     data class TrainingDelta(
         val before: DoubleArray,
@@ -35,7 +38,8 @@ object ModelManager {
         val optimizerStep: Int,
         val checkpointBytes: Long,
         val checkpointSavedAt: Long,
-        val hasRecoveryBackup: Boolean
+        val hasRecoveryBackup: Boolean,
+        val importedAt: Long = 0L
     )
 
     lateinit var nn: NeuralNetwork
@@ -48,27 +52,44 @@ object ModelManager {
         load(context.applicationContext)
     }
 
-    fun predict(input: String): DoubleArray = nn.predict(MathTokenizer.tokenize(input))
+    fun predictStructured(input: String): V5Prediction {
+        val encoding = StructuralMathEncoder.encode(input)
+        require(!encoding.truncated) { "المعادلة تتجاوز ${V5ModelSpec.MAX_NODES} عقدة RPN" }
+        return nn.predict(encoding)
+    }
 
-    fun predictValues(input: String): DoubleArray =
-        predict(input).map { it * OUTPUT_SCALE }.toDoubleArray()
+    /** Compatibility helper for older UI code: [primary/x, y]. */
+    fun predictValues(input: String): DoubleArray {
+        val p = predictStructured(input)
+        return if (p.family == EquationFamily.SYSTEM) {
+            doubleArrayOf(p.x ?: p.slotValues[0], p.y ?: p.slotValues[1])
+        } else {
+            val value = p.roots.firstOrNull() ?: p.slotValues[0]
+            if (input.lowercase().contains('y') && !input.lowercase().contains('x')) doubleArrayOf(0.0, value)
+            else doubleArrayOf(value, 0.0)
+        }
+    }
 
     fun trainWithTarget(input: String, x: Double, y: Double, repeats: Int, learningRate: Double): TrainingDelta {
-        require(x.isFinite() && y.isFinite()) { "قيم التدريب يجب أن تكون أرقامًا محدودة" }
-        val encoding = MathTokenizer.encode(input)
-        require(!encoding.truncated) { "المعادلة أطول من حد النموذج (${MathTokenizer.MAX_TOKENS} token)" }
-        require(encoding.unknownCount == 0) { "المعادلة تحتوي رموزًا لا يعرفها النموذج" }
-        val tokens = encoding.tokens
-        val target = doubleArrayOf(x / OUTPUT_SCALE, y / OUTPUT_SCALE)
-        val before = nn.predict(tokens)
+        require(x.isFinite() && y.isFinite()) { "قيم التدريب غير صالحة" }
+        val encoding = StructuralMathEncoder.encode(input)
+        require(!encoding.truncated) { "المعادلة أطول من حد v5" }
+        val before = predictValues(input)
+        val target = if (encoding.family == EquationFamily.SYSTEM) {
+            V5Target(EquationFamily.SYSTEM, SolutionState.FINITE, systemValues = doubleArrayOf(x, y))
+        } else {
+            val root = if (input.lowercase().contains('y') && !input.lowercase().contains('x')) y else x
+            V5Target(encoding.family, SolutionState.FINITE, roots = doubleArrayOf(root))
+        }
+        val item = V5TrainItem(encoding, target, equivalent = null)
         val count = repeats.coerceAtLeast(1)
-        repeat(count) { nn.train(tokens, target, learningRate) }
-        val after = nn.predict(tokens)
+        repeat(count) { nn.trainBatch(arrayOf(item), learningRate, 0.0) }
+        val after = predictValues(input)
         return TrainingDelta(
-            before = before.map { it * OUTPUT_SCALE }.toDoubleArray(),
-            after = after.map { it * OUTPUT_SCALE }.toDoubleArray(),
-            meanAbsoluteErrorBefore = meanAbsoluteError(before, target) * OUTPUT_SCALE,
-            meanAbsoluteErrorAfter = meanAbsoluteError(after, target) * OUTPUT_SCALE,
+            before = before,
+            after = after,
+            meanAbsoluteErrorBefore = meanAbsoluteError(before, doubleArrayOf(x, y)),
+            meanAbsoluteErrorAfter = meanAbsoluteError(after, doubleArrayOf(x, y)),
             optimizerSteps = count
         )
     }
@@ -90,21 +111,20 @@ object ModelManager {
         val backup = app.getFileStreamPath("$MODEL_FILE.bak")
 
         temp.delete()
-        val fileOutput = FileOutputStream(temp)
-        DataOutputStream(BufferedOutputStream(fileOutput)).use {
-            nn.saveState(it)
-            it.flush()
-            fileOutput.fd.sync()
+        val raw = FileOutputStream(temp)
+        DataOutputStream(BufferedOutputStream(raw)).use { out ->
+            nn.saveState(out)
+            out.flush()
+            raw.fd.sync()
         }
 
         var oldMoved = false
         try {
             if (backup.exists()) backup.delete()
             if (target.exists()) {
-                if (!target.renameTo(backup)) throw IllegalStateException("تعذر إنشاء نسخة احتياطية من النموذج")
+                if (!target.renameTo(backup)) throw IllegalStateException("تعذر إنشاء نسخة احتياطية")
                 oldMoved = true
             }
-
             if (!temp.renameTo(target)) {
                 FileInputStream(temp).use { input -> FileOutputStream(target).use { output -> input.copyTo(output) } }
                 temp.delete()
@@ -116,26 +136,56 @@ object ModelManager {
             throw e
         }
 
-        val p = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val edit = p.edit()
+        val edit = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
         if (samples != null) edit.putLong(KEY_SAMPLES, samples)
         if (batches != null) edit.putLong(KEY_BATCHES, batches)
         if (bestValidationMse != null && bestValidationMse.isFinite()) edit.putFloat(KEY_BEST_VAL, bestValidationMse.toFloat())
         if (lastLoss != null && lastLoss.isFinite()) edit.putFloat(KEY_LAST_LOSS, lastLoss.toFloat())
         if (lastValidationMse != null && lastValidationMse.isFinite()) edit.putFloat(KEY_LAST_VAL, lastValidationMse.toFloat())
         if (validationAccuracy != null && validationAccuracy.isFinite()) edit.putFloat(KEY_VAL_ACCURACY, validationAccuracy.toFloat())
-        edit.putLong(KEY_CHECKPOINT_TIME, System.currentTimeMillis())
-        edit.commit()
+        edit.putLong(KEY_CHECKPOINT_TIME, System.currentTimeMillis()).commit()
+    }
+
+    /**
+     * Imports the exact MAI5 file emitted by Colab. A fresh model is loaded first,
+     * so an incompatible/corrupt file can never damage the current checkpoint.
+     */
+    @Synchronized
+    fun importWeights(context: Context, input: InputStream, resetTrainingStats: Boolean = true): ModelInfo {
+        val candidate = NeuralNetwork()
+        DataInputStream(BufferedInputStream(input)).use { candidate.loadState(it) }
+        nn = candidate
+        val app = context.applicationContext
+        if (resetTrainingStats) {
+            val enabled = isTrainingEnabled(app)
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
+        }
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_IMPORTED_AT, System.currentTimeMillis()).commit()
+        save(app)
+        return modelInfo(app)
+    }
+
+    @Synchronized
+    fun exportWeights(output: OutputStream) {
+        DataOutputStream(BufferedOutputStream(output)).use { out -> nn.saveState(out); out.flush() }
+    }
+
+    @Synchronized
+    fun resetModel(context: Context) {
+        nn = NeuralNetwork()
+        val app = context.applicationContext
+        app.getFileStreamPath(MODEL_FILE).delete()
+        app.getFileStreamPath("$MODEL_FILE.bak").delete()
+        val enabled = isTrainingEnabled(app)
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
+        save(app, samples = 0, batches = 0)
     }
 
     fun setTrainingEnabled(context: Context, enabled: Boolean) {
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
     }
 
-    fun isTrainingEnabled(context: Context): Boolean =
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_TRAINING_ENABLED, false)
-
+    fun isTrainingEnabled(context: Context): Boolean = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_TRAINING_ENABLED, false)
     fun trainingSamples(context: Context): Long = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_SAMPLES, 0L)
     fun trainingBatches(context: Context): Long = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_BATCHES, 0L)
     fun bestValidationMse(context: Context): Double = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_BEST_VAL, Float.POSITIVE_INFINITY).toDouble()
@@ -145,14 +195,15 @@ object ModelManager {
 
     fun modelInfo(context: Context): ModelInfo {
         val app = context.applicationContext
-        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val p = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val checkpoint = app.getFileStreamPath(MODEL_FILE)
         return ModelInfo(
             parameterCount = nn.parameterCount(),
             optimizerStep = nn.optimizerStep(),
             checkpointBytes = checkpoint.takeIf { it.exists() }?.length() ?: 0L,
-            checkpointSavedAt = prefs.getLong(KEY_CHECKPOINT_TIME, 0L),
-            hasRecoveryBackup = app.getFileStreamPath("$MODEL_FILE.bak").exists()
+            checkpointSavedAt = p.getLong(KEY_CHECKPOINT_TIME, 0L),
+            hasRecoveryBackup = app.getFileStreamPath("$MODEL_FILE.bak").exists(),
+            importedAt = p.getLong(KEY_IMPORTED_AT, 0L)
         )
     }
 
@@ -160,21 +211,14 @@ object ModelManager {
         val file = context.getFileStreamPath(MODEL_FILE)
         val backup = context.getFileStreamPath("$MODEL_FILE.bak")
         if (tryLoad(file)) return
-
         if (file.exists()) {
             val corrupt = context.getFileStreamPath("$MODEL_FILE.corrupt")
-            corrupt.delete()
-            file.renameTo(corrupt)
+            corrupt.delete(); file.renameTo(corrupt)
         }
-
         nn = NeuralNetwork()
         if (tryLoad(backup)) {
-            try {
-                FileInputStream(backup).use { input -> FileOutputStream(file).use { output -> input.copyTo(output) } }
-            } catch (_: Exception) { }
-        } else {
-            nn = NeuralNetwork()
-        }
+            runCatching { FileInputStream(backup).use { i -> FileOutputStream(file).use { o -> i.copyTo(o) } } }
+        } else nn = NeuralNetwork()
     }
 
     private fun tryLoad(file: java.io.File): Boolean {
@@ -182,14 +226,13 @@ object ModelManager {
         return try {
             DataInputStream(BufferedInputStream(FileInputStream(file))).use { nn.loadState(it) }
             true
-        } catch (_: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
-    private fun meanAbsoluteError(prediction: DoubleArray, target: DoubleArray): Double {
+    private fun meanAbsoluteError(a: DoubleArray, b: DoubleArray): Double {
+        val count = maxOf(a.size, b.size).coerceAtLeast(1)
         var total = 0.0
-        for (i in target.indices) total += abs(prediction.getOrElse(i) { 0.0 } - target[i])
-        return total / target.size
+        for (i in 0 until count) total += abs(a.getOrElse(i) { 0.0 } - b.getOrElse(i) { 0.0 })
+        return total / count
     }
 }
