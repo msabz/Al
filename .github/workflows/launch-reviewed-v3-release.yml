@@ -1,3 +1,4 @@
+# Retry marker: portability fix validated before GPU dispatch.
 name: Launch Reviewed MAI5 v3 Release
 
 on:
