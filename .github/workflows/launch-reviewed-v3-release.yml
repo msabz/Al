@@ -22,7 +22,7 @@ jobs:
           ref: feat/v5-deepmind-colab
           fetch-depth: 1
 
-      - name: Verify runtime SHA handoff without GPU
+      - name: Verify runtime SHA and Kaggle slug contracts without GPU
         env:
           SOURCE_SHA: ${{ github.sha }}
           MATHAI_WORK_DIR: /tmp/mathai-v3-sha-preflight
@@ -56,7 +56,14 @@ jobs:
           exec(compile(prefix, str(v3_path), 'exec'), ns)
           assert ns['SOURCE_COMMIT'] == sha
           assert ns['core'] is not None
-          print('V3_RUNTIME_SHA_HANDOFF_OK', sha)
+
+          wf = pathlib.Path('.github/workflows/kaggle-train.yml').read_text()
+          expected = 'math-ai-v5-mai5-v3-trainer'
+          if wf.count(expected) < 3:
+              raise SystemExit('v3 Kaggle slug is not consistently wired')
+          if 'math-ai-v5-turbo-trainer' in wf:
+              raise SystemExit('legacy Kaggle slug still present in v3 workflow')
+          print('V3_RUNTIME_SHA_AND_SLUG_CONTRACTS_OK', sha)
           PY
 
       - name: Ensure no Kaggle training run is active
