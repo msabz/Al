@@ -42,6 +42,12 @@ data class V5Target(
         .toDoubleArray()
 }
 
+data class V5TrainItem(
+    val input: StructuralMathEncoder.Encoding,
+    val target: V5Target,
+    val equivalent: StructuralMathEncoder.Encoding? = null
+)
+
 data class V5Prediction(
     val family: EquationFamily,
     val state: SolutionState,
