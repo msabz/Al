@@ -28,4 +28,10 @@ class MathTeacherTest {
         assertNotNull(answer.x)
         assertEquals(3.0, answer.x!!, 1e-4)
     }
+
+    @Test fun detectsEvenMultiplicityRootBetweenGridPoints() {
+        val answer = MathTeacher.solve("(x-0.37)^2*(x+1)=0")
+        assertNotNull(answer.x)
+        assertEquals(0.37, answer.x!!, 1e-4)
+    }
 }
