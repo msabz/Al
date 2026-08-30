@@ -1,11 +1,15 @@
 package com.example.equationsolver.data
 
+import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.sin
+import kotlin.math.tan
 import kotlin.random.Random
-import java.util.Locale
 
 data class GeneratedExample(
     val equation: String,
@@ -14,23 +18,24 @@ data class GeneratedExample(
     val family: String = "unknown"
 )
 
-/** Infinite synthetic curriculum for algebraic and analytic equations (no geometry). */
+/** Infinite synthetic curriculum for mathematical equations only (no geometry). */
 object EquationGenerator {
     fun generate(): GeneratedExample = when (Random.nextInt(100)) {
-        in 0..19 -> generateLinear()
-        in 20..34 -> generateQuadratic()
-        in 35..44 -> generateCubic()
-        in 45..54 -> generateRational()
-        in 55..64 -> generateRadical()
-        in 65..74 -> generateExponential()
-        in 75..84 -> generateLogarithmic()
-        in 85..89 -> generateAbsolute()
-        in 90..94 -> generateTrigonometric()
+        in 0..17 -> generateLinear()
+        in 18..29 -> generateQuadratic()
+        in 30..37 -> generateCubic()
+        in 38..42 -> generateQuartic()
+        in 43..52 -> generateRational()
+        in 53..62 -> generateRadical()
+        in 63..70 -> generateExponential()
+        in 71..78 -> generateLogarithmic()
+        in 79..82 -> generateAbsolute()
+        in 83..89 -> generateTrigonometric()
         else -> generateSystem()
     }
 
     private fun generateLinear(): GeneratedExample {
-        val solveY = Random.nextInt(5) == 0
+        val solveY = Random.nextInt(3) == 0
         val a = nonZeroInt(-12, 13)
         val value = Random.nextInt(-50, 51).toDouble() / Random.nextInt(1, 5)
         val b = Random.nextInt(-30, 31)
@@ -45,23 +50,32 @@ object EquationGenerator {
     }
 
     private fun generateQuadratic(): GeneratedExample {
-        val r1 = Random.nextInt(-15, 16).toDouble()
-        val r2 = Random.nextInt(-15, 16).toDouble()
-        val b = -(r1 + r2)
-        val c = r1 * r2
-        val target = canonicalRoot(listOf(r1, r2))
-        return GeneratedExample("x^2${signed(b)}x${signed(c)}=0", target, 0.0, "quadratic")
+        val roots = List(2) { Random.nextInt(-15, 16).toDouble() }
+        val b = -(roots[0] + roots[1])
+        val c = roots[0] * roots[1]
+        return GeneratedExample("x^2${signed(b)}x${signed(c)}=0", canonicalRoot(roots), 0.0, "quadratic")
     }
 
     private fun generateCubic(): GeneratedExample {
-        val r1 = Random.nextInt(-8, 9).toDouble()
-        val r2 = Random.nextInt(-8, 9).toDouble()
-        val r3 = Random.nextInt(-8, 9).toDouble()
-        val a2 = -(r1 + r2 + r3)
-        val a1 = r1 * r2 + r1 * r3 + r2 * r3
-        val a0 = -r1 * r2 * r3
-        val target = canonicalRoot(listOf(r1, r2, r3))
-        return GeneratedExample("x^3${signed(a2)}x^2${signed(a1)}x${signed(a0)}=0", target, 0.0, "cubic")
+        val r = List(3) { Random.nextInt(-8, 9).toDouble() }
+        val a2 = -(r[0] + r[1] + r[2])
+        val a1 = r[0] * r[1] + r[0] * r[2] + r[1] * r[2]
+        val a0 = -r[0] * r[1] * r[2]
+        return GeneratedExample("x^3${signed(a2)}x^2${signed(a1)}x${signed(a0)}=0", canonicalRoot(r), 0.0, "cubic")
+    }
+
+    private fun generateQuartic(): GeneratedExample {
+        val r = List(4) { Random.nextInt(-6, 7).toDouble() }
+        val s1 = r.sum()
+        var s2 = 0.0
+        var s3 = 0.0
+        for (i in 0..3) for (j in i + 1..3) s2 += r[i] * r[j]
+        for (i in 0..3) for (j in i + 1..3) for (k in j + 1..3) s3 += r[i] * r[j] * r[k]
+        val s4 = r.reduce { acc, value -> acc * value }
+        return GeneratedExample(
+            "x^4${signed(-s1)}x^3${signed(s2)}x^2${signed(-s3)}x${signed(s4)}=0",
+            canonicalRoot(r), 0.0, "quartic"
+        )
     }
 
     private fun generateRational(): GeneratedExample {
@@ -87,10 +101,16 @@ object EquationGenerator {
 
     private fun generateExponential(): GeneratedExample {
         val root = Random.nextInt(-30, 31).toDouble() / 10.0
-        val a = nonZeroInt(-3, 4)
-        val b = Random.nextInt(-2, 3)
-        val rhs = exp(a * root + b)
-        return GeneratedExample("exp(${a}x${signed(b.toDouble())})=${fmt(rhs, 8)}", root, 0.0, "exponential")
+        return if (Random.nextBoolean()) {
+            val a = nonZeroInt(-3, 4)
+            val b = Random.nextInt(-2, 3)
+            val rhs = exp(a * root + b)
+            GeneratedExample("exp(${a}x${signed(b.toDouble())})=${fmt(rhs, 8)}", root, 0.0, "exponential-exp")
+        } else {
+            val base = Random.nextInt(2, 6).toDouble()
+            val rhs = base.pow(root)
+            GeneratedExample("${fmt(base)}^x=${fmt(rhs, 8)}", root, 0.0, "exponential-power")
+        }
     }
 
     private fun generateLogarithmic(): GeneratedExample {
@@ -98,8 +118,11 @@ object EquationGenerator {
         val a = Random.nextInt(1, 6)
         val inner = Random.nextInt(1, 13).toDouble()
         val b = inner - a * root
-        val rhs = ln(inner)
-        return GeneratedExample("ln(${a}x${signed(b)})=${fmt(rhs, 8)}", root, 0.0, "logarithmic")
+        return if (Random.nextBoolean()) {
+            GeneratedExample("ln(${a}x${signed(b)})=${fmt(ln(inner), 8)}", root, 0.0, "logarithmic-ln")
+        } else {
+            GeneratedExample("log(${a}x${signed(b)})=${fmt(log10(inner), 8)}", root, 0.0, "logarithmic-log10")
+        }
     }
 
     private fun generateAbsolute(): GeneratedExample {
@@ -110,9 +133,21 @@ object EquationGenerator {
     }
 
     private fun generateTrigonometric(): GeneratedExample {
-        val root = Random.nextInt(-14, 15).toDouble() / 10.0
-        val rhs = sin(root)
-        return GeneratedExample("sin(x)=${fmt(rhs, 8)}", root, 0.0, "trigonometric")
+        return when (Random.nextInt(3)) {
+            0 -> {
+                val root = Random.nextInt(-14, 15).toDouble() / 10.0
+                GeneratedExample("sin(x)=${fmt(sin(root), 8)}", root, 0.0, "trigonometric-sin")
+            }
+            1 -> {
+                val root = Random.nextInt(-12, 13).toDouble() / 10.0
+                GeneratedExample("tan(x)=${fmt(tan(root), 8)}", root, 0.0, "trigonometric-tan")
+            }
+            else -> {
+                val magnitude = Random.nextInt(0, 15).toDouble() / 10.0
+                val canonical = -magnitude
+                GeneratedExample("cos(x)=${fmt(cos(magnitude), 8)}", canonical, 0.0, "trigonometric-cos")
+            }
+        }
     }
 
     private fun generateSystem(): GeneratedExample {
