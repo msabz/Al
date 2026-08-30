@@ -1,4 +1,4 @@
-# Retry marker: portability fix validated before GPU dispatch.
+# Retry marker: portable work directory fixed before GPU dispatch.
 name: Launch Reviewed MAI5 v3 Release
 
 on:
