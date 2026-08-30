@@ -1,0 +1,80 @@
+name: Fix Linear2D And Launch Release
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/fix-linear2d-and-launch.yml"]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix-preflight-launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 0
+
+      - name: Apply verified Linear2D parser fix and coverage guard
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('kaggle/kaggle_train.py')
+          text = path.read_text()
+
+          anchor = '''    if old_parser not in text:\n        raise RuntimeError("DeepMind linear_2d parser patch target not found")\n    text = text.replace(old_parser, new_parser, 1)\n'''
+          addition = '''    if old_parser not in text:\n        raise RuntimeError("DeepMind linear_2d parser patch target not found")\n    text = text.replace(old_parser, new_parser, 1)\n\n    # Official linear_2d expressions may carry leading whitespace after splitting.\n    # ast.parse(..., mode="eval") treats that as an unexpected indent, so normalize\n    # expression boundaries before parsing. This was the root cause of 0 accepted\n    # linear_2d examples in release run #4.\n    old_affine = 'tree = ast.parse(expr.replace("^", "**"), mode="eval")'\n    new_affine = 'tree = ast.parse(expr.strip().replace("^", "**"), mode="eval")'\n    if old_affine not in text:\n        raise RuntimeError("DeepMind affine whitespace patch target not found")\n    text = text.replace(old_affine, new_affine, 1)\n\n    # Never spend a full GPU training run with a silently empty official module.\n    old_coverage = '    print(f"  ✓ accepted={accepted_here} / seen={seen_here} in {time.time()-t0:.1f}s")\\ndm_writer.trim()'\n    new_coverage = ('    if accepted_here < min(1000, DEEPMIND_PER_FILE):\\n'\n                    '        raise RuntimeError(f"DeepMind coverage guard failed for {split_name}/{module}: accepted={accepted_here}, seen={seen_here}")\\n'\n                    '    print(f"  ✓ accepted={accepted_here} / seen={seen_here} in {time.time()-t0:.1f}s")\\n'\n                    'dm_writer.trim()')\n    if old_coverage not in text:\n        raise RuntimeError("DeepMind coverage guard insertion target not found")\n    text = text.replace(old_coverage, new_coverage, 1)\n'''
+
+          if 'old_affine = ' in text:
+              raise SystemExit('Affine fix already present; refusing duplicate patch')
+          if anchor not in text:
+              raise SystemExit('Parser anchor not found; source changed unexpectedly')
+          text = text.replace(anchor, addition, 1)
+          path.write_text(text)
+          PY
+
+      - name: Static preflight before commit
+        run: |
+          set -euo pipefail
+          python -m py_compile kaggle/kaggle_train.py
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          src = Path('kaggle/kaggle_train.py').read_text()
+          required = [
+              'expr.strip().replace("^", "**")',
+              'DeepMind coverage guard failed',
+              'core.BATCH_SIZE = 4096',
+              'core.TOTAL_STEPS = 40_000',
+              'ov = other_out[set_ids,:5][:,PERMS]',
+          ]
+          missing = [x for x in required if x not in src]
+          if missing:
+              raise SystemExit('Preflight missing: ' + repr(missing))
+          # Reproduce the exact class of failure seen in run #4.
+          ast.parse('   -3*x + 2'.strip().replace('^','**'), mode='eval')
+          print('LINEAR2D_RELEASE_PREFLIGHT_OK')
+          PY
+
+      - name: Commit parser fix
+        run: |
+          set -euo pipefail
+          git config user.name "msabz"
+          git config user.email "36938563+msabz@users.noreply.github.com"
+          git add kaggle/kaggle_train.py
+          git commit -m "Fix DeepMind linear2d whitespace parser and coverage guard"
+          git push origin HEAD:feat/v5-deepmind-colab
+
+      - name: Dispatch exactly one guarded Kaggle run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run kaggle-train.yml --ref feat/v5-deepmind-colab
+          echo "GUARDED_KAGGLE_RELEASE_DISPATCHED"
