@@ -12,7 +12,7 @@ LEARNING_RATE = 6e-4
 CONSISTENCY_WEIGHT = 0.05
 DEEPMIND_RATIO = 0.60
 CHECKPOINT_EVERY = 1_000
-RESUME_FROM_MAI5 = False   # True -> worker asks you to upload a previous .mai5
+RESUME_FROM_MAI5 = False   # True -> upload a previous .mai5 before training
 BUILD_SIGNED_RELEASE = False  # True -> asks for your stable v5 JKS + passwords
 
 # ========================= BOOTSTRAP =========================
@@ -51,9 +51,26 @@ trainer = replace_setting(trainer, "LEARNING_RATE", repr(float(LEARNING_RATE)))
 trainer = replace_setting(trainer, "CONSISTENCY_WEIGHT", repr(float(CONSISTENCY_WEIGHT)))
 trainer = replace_setting(trainer, "DEEPMIND_RATIO", repr(float(DEEPMIND_RATIO)))
 trainer = replace_setting(trainer, "CHECKPOINT_EVERY", str(int(CHECKPOINT_EVERY)))
-trainer = replace_setting(trainer, "RESUME_FROM_MAI5", "True" if RESUME_FROM_MAI5 else "False")
+# Resume upload must happen in the notebook kernel, not inside a shell subprocess.
+trainer = replace_setting(trainer, "RESUME_FROM_MAI5", "False")
 trainer = replace_setting(trainer, "AUTO_DOWNLOAD_AT_END", "False")
 trainer = replace_setting(trainer, "OUTPUT_FILE", repr(str(WORK_MODEL)))
+
+resume_source = None
+if RESUME_FROM_MAI5:
+    from google.colab import files
+    print("Upload a compatible MAI5 checkpoint to resume training.")
+    uploaded = files.upload()
+    resume_name = next((name for name in uploaded if name.lower().endswith(".mai5")), None)
+    if not resume_name:
+        raise RuntimeError("No .mai5 checkpoint uploaded")
+    resume_source = pathlib.Path("/content/resume_input.mai5")
+    resume_source.write_bytes(uploaded[resume_name])
+    marker = "# Fixed external holdout: larger coefficient/solution range, never fed into training."
+    if marker not in trainer:
+        raise RuntimeError("Trainer resume injection point not found")
+    trainer = trainer.replace(marker, f"load_mai5({repr(str(resume_source))})\n\n{marker}", 1)
+
 worker = pathlib.Path("/content/math_ai_v5_worker.py")
 worker.write_text(trainer)
 
@@ -106,11 +123,11 @@ embedded_model = assets / "default_model.mai5"
 shutil.copy2(BEST_MODEL, embedded_model)
 
 # ========================= PYTHON REFERENCE INFERENCE =========================
-# Reuse exactly the definitions from the official trainer, but stop before TRAIN.
-# This loads the selected MAI5 and writes a compact sidecar used by JUnit/Kotlin.
+# Reuse the unmodified trainer definitions only; do not run its training loop.
 print("\n3) Generating Python reference predictions for Kotlin interop test...")
-prefix = trainer.split("# ========================= TRAIN =========================", 1)[0]
-prefix = replace_setting(prefix, "RESUME_FROM_MAI5", "False")
+reference_source = replace_setting(trainer_src, "RESUME_FROM_MAI5", "False")
+reference_source = replace_setting(reference_source, "AUTO_DOWNLOAD_AT_END", "False")
+prefix = reference_source.split("# ========================= TRAIN =========================", 1)[0]
 namespace = {"__name__": "mai5_interop_reference"}
 exec(compile(prefix, "mai5_interop_reference.py", "exec"), namespace)
 namespace["load_mai5"](str(BEST_MODEL))
@@ -232,6 +249,7 @@ report = {
         "deepmind_ratio": DEEPMIND_RATIO,
         "deepmind_modules": ["algebra__linear_1d", "algebra__linear_2d", "algebra__polynomial_roots"],
         "best_holdout": best_metrics,
+        "resumed_from_mai5": bool(RESUME_FROM_MAI5),
         "elapsed_seconds": round(time.time() - start_time, 1),
     },
     "model": {
