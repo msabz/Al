@@ -63,6 +63,7 @@ old_loader = 'trainer_src = (ROOT / "colab/train_v5_deepmind.py").read_text()'
 new_loader = (
     'reference_trainer_src = (ROOT / "colab/train_v5_deepmind.py").read_text()\n'
     'trainer_src = (ROOT / "colab/turbo_train_v5.py").read_text()\n'
+    'trainer_src = trainer_src.replace("USE_TORCH_COMPILE = True", "USE_TORCH_COMPILE = False", 1)\n'
     'print("Training engine: TURBO GPU-resident DeepMind pipeline")'
 )
 if old_loader not in source:
