@@ -12,6 +12,12 @@ if not re.fullmatch(r"[0-9a-fA-F]{40}", SOURCE_COMMIT):
 url = f"https://raw.githubusercontent.com/msabz/Al/{SOURCE_COMMIT}/kaggle/deepmind_only_train_v3.py"
 target = pathlib.Path("/kaggle/working/_deepmind_only_train_v3.py")
 urllib.request.urlretrieve(url, target)
-text = target.read_text().replace("__SOURCE_COMMIT__", SOURCE_COMMIT)
-target.write_text(text)
-exec(compile(text, str(target), "exec"), {"__name__": "__main__", "__file__": str(target)})
+text = target.read_text()
+exec(
+    compile(text, str(target), "exec"),
+    {
+        "__name__": "__main__",
+        "__file__": str(target),
+        "SOURCE_COMMIT": SOURCE_COMMIT,
+    },
+)
