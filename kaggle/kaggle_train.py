@@ -246,6 +246,26 @@ def prepare_turbo_worker_patched():
         raise RuntimeError("DeepMind linear_2d parser patch target not found")
     text = text.replace(old_parser, new_parser, 1)
 
+    # Official linear_2d expressions may carry leading whitespace after splitting.
+    # ast.parse(..., mode="eval") treats that as an unexpected indent, so normalize
+    # expression boundaries before parsing. This was the root cause of 0 accepted
+    # linear_2d examples in release run #4.
+    old_affine = 'tree = ast.parse(expr.replace("^", "**"), mode="eval")'
+    new_affine = 'tree = ast.parse(expr.strip().replace("^", "**"), mode="eval")'
+    if old_affine not in text:
+        raise RuntimeError("DeepMind affine whitespace patch target not found")
+    text = text.replace(old_affine, new_affine, 1)
+
+    # Never spend a full GPU training run with a silently empty official module.
+    old_coverage = '    print(f"  ✓ accepted={accepted_here} / seen={seen_here} in {time.time()-t0:.1f}s")\ndm_writer.trim()'
+    new_coverage = ('    if accepted_here < min(1000, DEEPMIND_PER_FILE):\n'
+                    '        raise RuntimeError(f"DeepMind coverage guard failed for {split_name}/{module}: accepted={accepted_here}, seen={seen_here}")\n'
+                    '    print(f"  ✓ accepted={accepted_here} / seen={seen_here} in {time.time()-t0:.1f}s")\n'
+                    'dm_writer.trim()')
+    if old_coverage not in text:
+        raise RuntimeError("DeepMind coverage guard insertion target not found")
+    text = text.replace(old_coverage, new_coverage, 1)
+
     marker = "\n\nclass PoolWriter:"
     helper = r'''
 
