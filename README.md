@@ -24,12 +24,13 @@ Synthetic examples are generated indefinitely until the user stops training. Cur
 - 2x2 linear systems
 - Quadratic equations
 - Cubic equations
+- Quartic equations
 - Rational equations
 - Radical/square-root equations
-- Exponential equations
-- Logarithmic equations
+- Exponential equations using both `exp(...)` and `a^x`
+- Natural-log and base-10 logarithmic equations (`ln`, `log`)
 - Absolute-value equations
-- Trigonometric `sin` equations
+- Trigonometric equations using `sin`, `cos`, and `tan`
 
 Every generated example carries its known target and is independently substituted back into the equation before it is allowed into a training batch. This prevents a solver bug from silently poisoning the neural training labels.
 
@@ -40,7 +41,7 @@ The test screen deliberately shows two separate results:
 1. **الجواب الصحيح** — exact or numerical teacher result used only as a reference.
 2. **جواب النموذج** — neural prediction from the saved model.
 
-For equations with several real roots, the current fixed numeric model learns a deterministic principal root (the real root closest to zero, with the lower root used to break ties). The reference text may still display multiple valid roots.
+For equations with several real roots, the current fixed numeric model learns a deterministic principal root: the real root closest to zero, with the lower numeric root used to break equal-distance ties. The reference text may still display several valid roots.
 
 ## Background training
 
@@ -48,4 +49,4 @@ Training runs in a foreground service with a partial wake lock, periodic recover
 
 ## CI
 
-Pull requests must run unit tests before the debug APK is built. Regression tests cover linear systems, `y` handling, quadratic principal-root selection, the general expression evaluator, and generated curriculum validity.
+Pull requests must run unit tests before the debug APK is built. Regression tests cover linear systems, `y` handling, quadratic principal-root selection, general numerical principal roots, the expression evaluator, and generated curriculum validity.
