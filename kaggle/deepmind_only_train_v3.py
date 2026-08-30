@@ -15,8 +15,10 @@ SOURCE_COMMIT = "__SOURCE_COMMIT__"
 if not re.fullmatch(r"[0-9a-fA-F]{40}", SOURCE_COMMIT):
     raise RuntimeError(f"SOURCE_COMMIT injection invalid: {SOURCE_COMMIT!r}")
 
+WORK_DIR = pathlib.Path("/kaggle/working")
+WORK_DIR.mkdir(parents=True, exist_ok=True)
 BASE_URL = f"https://raw.githubusercontent.com/msabz/Al/{SOURCE_COMMIT}/kaggle/deepmind_only_train.py"
-BASE_PATH = pathlib.Path("/kaggle/working/_deepmind_only_v2_library.py")
+BASE_PATH = WORK_DIR / "_deepmind_only_v2_library.py"
 urllib.request.urlretrieve(BASE_URL, BASE_PATH)
 base_text = BASE_PATH.read_text().replace("__SOURCE_COMMIT__", SOURCE_COMMIT)
 
