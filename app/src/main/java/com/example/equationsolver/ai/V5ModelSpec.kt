@@ -68,7 +68,7 @@ data class V5Prediction(
 
 object V5ModelSpec {
     const val FILE_MAGIC = 0x4D414935 // "MAI5"
-    const val FILE_VERSION = 2
+    const val FILE_VERSION = 3
 
     const val MAX_NODES = 80
     const val TOKEN_VOCAB = 22
@@ -91,4 +91,7 @@ object V5ModelSpec {
     const val MAX_GRADIENT_NORM = 5.0
     const val WEIGHT_DECAY = 1e-5
     const val CANONICAL_COEFF_SLOTS = 6
+    const val POLYNOMIAL_FEATURE_SLOTS = 7 // six q(z)=P(ROOT_SCALE*z) coefficients + degree/5
+    const val SYSTEM_FEATURE_SLOTS = 9     // two scaled rows + normalized Cramer invariants (det,nx,ny)
+    const val POLYNOMIAL_RESIDUAL_WEIGHT = 0.15
 }

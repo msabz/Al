@@ -115,7 +115,7 @@ class NeuralNetwork(private val random: Random = Random.Default) {
             require(!item.input.truncated) { "مثال تدريب مقطوع" }
             require(item.input.family == item.target.family) { "المسار البنيوي لا يطابق هدف التدريب" }
             val cache = forward(item.input)
-            val supervised = supervisedGradient(cache.out, item.target)
+            val supervised = supervisedGradient(cache.out, item.target, item.input)
             loss += supervised.first
             backward(cache, supervised.second)
 
@@ -213,7 +213,11 @@ class NeuralNetwork(private val random: Random = Random.Default) {
         return input
     }
 
-    private fun supervisedGradient(out: FloatArray, target: V5Target): Pair<Double, FloatArray> {
+    private fun supervisedGradient(
+        out: FloatArray,
+        target: V5Target,
+        encoding: StructuralMathEncoder.Encoding
+    ): Pair<Double, FloatArray> {
         val grad = FloatArray(V5ModelSpec.HEAD_OUTPUT)
         var loss = 0.0
         val rootWeight = 1.0
@@ -254,6 +258,27 @@ class NeuralNetwork(private val random: Random = Random.Default) {
             val label = if (assignedPresence[slot]) 1.0 else 0.0
             loss += presenceWeight * binaryCrossEntropy(p, label) / V5ModelSpec.ROOT_SLOTS
             grad[logitIndex] += (presenceWeight * (p - label) / V5ModelSpec.ROOT_SLOTS).toFloat()
+        }
+
+        if (target.state == SolutionState.FINITE && target.family == EquationFamily.POLYNOMIAL) {
+            val coeff = DoubleArray(V5ModelSpec.CANONICAL_COEFF_SLOTS) { encoding.numeric[it].toDouble() }
+            val activePoly = assignedPresence.count { it }.coerceAtLeast(1)
+            for (slot in 0 until V5ModelSpec.ROOT_SLOTS) {
+                if (!assignedPresence[slot]) continue
+                val z = out[slot].toDouble()
+                var q = coeff.last()
+                var dq = 0.0
+                for (power in coeff.lastIndex - 1 downTo 0) {
+                    dq = dq * z + q
+                    q = q * z + coeff[power]
+                }
+                val absQ = kotlin.math.abs(q)
+                val beta = 0.25
+                val residualLoss = if (absQ < beta) 0.5 * q * q / beta else absQ - 0.5 * beta
+                val dLossDq = if (absQ < beta) q / beta else if (q >= 0.0) 1.0 else -1.0
+                loss += V5ModelSpec.POLYNOMIAL_RESIDUAL_WEIGHT * residualLoss / activePoly
+                grad[slot] += (V5ModelSpec.POLYNOMIAL_RESIDUAL_WEIGHT * dLossDq * dq / activePoly).toFloat()
+            }
         }
 
         val stateStart = V5ModelSpec.ROOT_SLOTS * 2

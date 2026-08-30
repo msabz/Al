@@ -11,6 +11,12 @@ import java.io.DataOutputStream
 import kotlin.random.Random
 
 class NeuralNetworkTest {
+    @Test fun v3SemanticContractIsActive() {
+        assertEquals(3, V5ModelSpec.FILE_VERSION)
+        assertEquals(7, V5ModelSpec.POLYNOMIAL_FEATURE_SLOTS)
+        assertEquals(9, V5ModelSpec.SYSTEM_FEATURE_SLOTS)
+    }
+
     @Test fun linearEncoderUsesCanonicalCoefficientSlots() {
         val e = StructuralMathEncoder.encode("12.5x+4=29")
         assertEquals(EquationFamily.LINEAR, e.family)

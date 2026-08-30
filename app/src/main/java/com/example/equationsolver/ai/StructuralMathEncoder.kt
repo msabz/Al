@@ -139,7 +139,7 @@ object StructuralMathEncoder {
     }
 
     private fun coefficientEncoding(source: String, family: EquationFamily, values: DoubleArray): Encoding {
-        require(values.size == V5ModelSpec.CANONICAL_COEFF_SLOTS)
+        require(values.isNotEmpty() && values.size <= V5ModelSpec.MAX_NODES)
         val kinds = IntArray(V5ModelSpec.MAX_NODES)
         val numeric = FloatArray(V5ModelSpec.MAX_NODES)
         val depth = FloatArray(V5ModelSpec.MAX_NODES)
@@ -166,6 +166,13 @@ object StructuralMathEncoder {
         val degree = polynomialDegree(coeff)
         if (family == EquationFamily.LINEAR && degree > 1) return null
         if (family == EquationFamily.POLYNOMIAL && degree < 2) return null
+        if (family == EquationFamily.POLYNOMIAL) {
+            canonicalizePolynomialForRootScale(coeff)
+            val features = DoubleArray(V5ModelSpec.POLYNOMIAL_FEATURE_SLOTS)
+            for (i in coeff.indices) features[i] = coeff[i]
+            features[V5ModelSpec.CANONICAL_COEFF_SLOTS] = degree.toDouble() / 5.0
+            return coefficientEncoding(source, family, features)
+        }
         canonicalizePolynomial(coeff)
         return coefficientEncoding(source, family, coeff)
     }
@@ -182,9 +189,17 @@ object StructuralMathEncoder {
             }
             result
         })
+        val a1 = rows[0][0]; val b1 = rows[0][1]; val c1 = rows[0][2]
+        val a2 = rows[1][0]; val b2 = rows[1][1]; val c2 = rows[1][2]
+        val det = a1 * b2 - a2 * b1
+        val nx = c1 * b2 - c2 * b1
+        val ny = a1 * c2 - a2 * c1
+        val invariantScale = maxOf(abs(det), abs(nx), abs(ny))
+        val inv = if (invariantScale <= CANONICAL_EPS) doubleArrayOf(0.0, 0.0, 0.0)
+            else doubleArrayOf(det / invariantScale, nx / invariantScale, ny / invariantScale)
         val values = doubleArrayOf(
-            rows[0][0], rows[0][1], rows[0][2],
-            rows[1][0], rows[1][1], rows[1][2]
+            a1, b1, c1, a2, b2, c2,
+            cleanZero(inv[0]), cleanZero(inv[1]), cleanZero(inv[2])
         )
         return coefficientEncoding(source, EquationFamily.SYSTEM, values)
     }
@@ -196,7 +211,9 @@ object StructuralMathEncoder {
         val right = affineOf(toRpn(equation.substring(at + 1))) ?: return null
         var a = left.x - right.x
         var b = left.y - right.y
-        var c = -(left.c - right.c)
+        var c = -(left.c - right.c) / V5ModelSpec.ROOT_SCALE
+        // x=ROOT_SCALE*z, y=ROOT_SCALE*w => a*z+b*w=c/ROOT_SCALE.
+        // This keeps coefficients aligned with the network's normalized outputs.
         val scale = maxOf(abs(a), abs(b), abs(c))
         if (scale <= CANONICAL_EPS) return doubleArrayOf(0.0, 0.0, 0.0)
         a /= scale; b /= scale; c /= scale
@@ -322,6 +339,13 @@ object StructuralMathEncoder {
 
     private fun polynomialDegree(p: DoubleArray): Int = (p.lastIndex downTo 0).firstOrNull { abs(p[it]) > CANONICAL_EPS } ?: 0
 
+    private fun canonicalizePolynomialForRootScale(p: DoubleArray) {
+        // The network predicts z=root/ROOT_SCALE. Encode q(z)=P(ROOT_SCALE*z),
+        // then normalize q globally. Roots of q are exactly the normalized outputs.
+        for (power in 1 until p.size) p[power] *= V5ModelSpec.ROOT_SCALE.pow(power.toDouble())
+        canonicalizePolynomial(p)
+    }
+
     private fun canonicalizePolynomial(p: DoubleArray) {
         val scale = p.maxOf { abs(it) }
         if (scale <= CANONICAL_EPS) { p.fill(0.0); return }
@@ -372,10 +396,32 @@ object StructuralMathEncoder {
     }
 
     private fun hasVariableInDenominator(s: String): Boolean {
-        val slash = s.indexOf('/')
-        if (slash < 0) return false
-        val after = s.substring(slash + 1)
-        return after.contains('x') || after.contains('y')
+        var slash = s.indexOf('/')
+        while (slash >= 0) {
+            var i = slash + 1
+            while (i < s.length && (s[i] == '+' || s[i] == '-')) i++
+            if (i >= s.length) return false
+            if (s[i] == '(') {
+                var depth = 0
+                val start = i
+                var end = -1
+                while (i < s.length) {
+                    if (s[i] == '(') depth++
+                    else if (s[i] == ')') {
+                        depth--
+                        if (depth == 0) { end = i; break }
+                    }
+                    i++
+                }
+                if (end < 0) return true
+                val factor = s.substring(start + 1, end)
+                if (factor.contains('x') || factor.contains('y')) return true
+            } else if (s[i] == 'x' || s[i] == 'y') {
+                return true
+            }
+            slash = s.indexOf('/', slash + 1)
+        }
+        return false
     }
 
     private fun toRpn(expression: String): List<Pair<Int, Double>> {

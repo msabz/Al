@@ -270,7 +270,7 @@ def mixed_batch(batch_size, step_idx=None):
     print("[DEEPMIND-ONLY] linear_1d + linear_2d + polynomial_roots", flush=True)
     print("[DEEPMIND-ONLY] project synthetic generator: DISABLED", flush=True)
     print("[DEEPMIND-ONLY] project augmentation: DISABLED", flush=True)
-    print("[DEEPMIND-ONLY] representation: canonical numeric coefficients for linear/poly/system", flush=True)
+    print("[DEEPMIND-ONLY] representation: root-scaled canonical poly/system + Cramer invariants", flush=True)
     print("[DEEPMIND-ONLY] curriculum: easy -> easy+medium -> easy+medium+hard", flush=True)
     return worker
 

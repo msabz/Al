@@ -43,10 +43,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
 # ========================= MAI5 CONTRACT (must match Android) =========================
-MAGIC=0x4D414935; VERSION=2
+MAGIC=0x4D414935; VERSION=3
 MAX_NODES=80; TOKEN_VOCAB=22; EMB=16; EXTRA=3; NODE_FEATURES=19; INPUT=1520
 SHARED1=96; SHARED2=64; HEAD_HIDDEN=48; HEADS=4; ROOT_SLOTS=5; STATES=4; HEAD_OUT=14
-ROOT_SCALE=100.0; MAX_GRAD_NORM=5.0; CANONICAL_COEFF_SLOTS=6
+ROOT_SCALE=100.0; MAX_GRAD_NORM=5.0; CANONICAL_COEFF_SLOTS=6; POLYNOMIAL_FEATURE_SLOTS=7; SYSTEM_FEATURE_SLOTS=9; POLYNOMIAL_RESIDUAL_WEIGHT=0.15
 PAD,NUMBER,X,Y,PI,E,ADD,SUB,MUL,DIV,POW,NEG,SIN,COS,TAN,SQRT,LOG,LN,EXP,ABS,EQ,SEP=range(22)
 LINEAR,POLYNOMIAL,ANALYTIC,SYSTEM=range(4)
 FINITE,NO_SOLUTION,INFINITE,UNSUPPORTED=range(4)
@@ -62,8 +62,28 @@ def family_of(raw):
     s=normalize_text(raw)
     if ";" in s: return SYSTEM
     if any(f+"(" in s for f in FUNCTIONS): return ANALYTIC
-    slash=s.find("/")
-    if slash>=0 and ("x" in s[slash+1:] or "y" in s[slash+1:]): return ANALYTIC
+    def variable_denominator(text):
+        slash=text.find("/")
+        while slash>=0:
+            i=slash+1
+            while i<len(text) and text[i] in "+-": i+=1
+            if i>=len(text): return False
+            if text[i]=="(":
+                depth=0; start=i; end=-1
+                while i<len(text):
+                    if text[i]=="(": depth+=1
+                    elif text[i]==")":
+                        depth-=1
+                        if depth==0: end=i; break
+                    i+=1
+                if end<0: return True
+                factor=text[start+1:end]
+                if "x" in factor or "y" in factor: return True
+            elif text[i] in "xy":
+                return True
+            slash=text.find("/",slash+1)
+        return False
+    if variable_denominator(s): return ANALYTIC
     deg=[int(v) for v in re.findall(r"[xy]\^(\d+)",s)]
     if deg and max(deg)>=2: return POLYNOMIAL
     if re.search(r"\([^)]*[xy][^)]*\)\*\([^)]*[xy][^)]*\)",s): return POLYNOMIAL
@@ -279,19 +299,25 @@ def _canonical_poly(src,fam):
     degree=_poly_degree(p)
     if fam==LINEAR and degree>1:return None
     if fam==POLYNOMIAL and degree<2:return None
+    if fam==POLYNOMIAL:
+        p=[x*(ROOT_SCALE**i) for i,x in enumerate(p)]
     scale=max(abs(x) for x in p)
-    if scale<=CANONICAL_EPS:return [0.0]*CANONICAL_COEFF_SLOTS
-    p=[x/scale for x in p]
-    degree=_poly_degree(p)
-    if p[degree]<0:p=[-x for x in p]
-    return [0.0 if abs(x)<1e-12 else x for x in p]
+    if scale<=CANONICAL_EPS:
+        base=[0.0]*CANONICAL_COEFF_SLOTS
+    else:
+        base=[x/scale for x in p]
+        d=_poly_degree(base)
+        if base[d]<0:base=[-x for x in base]
+        base=[0.0 if abs(x)<1e-12 else x for x in base]
+    if fam==POLYNOMIAL:return base+[degree/5.0]
+    return base
 
 def _canonical_row(eq):
     at=_eq_at(eq)
     if at<0:return None
     left=_rpn_affine(rpn(eq[:at])); right=_rpn_affine(rpn(eq[at+1:]))
     if left is None or right is None:return None
-    a=left[0]-right[0]; b=left[1]-right[1]; c=-(left[2]-right[2])
+    a=left[0]-right[0]; b=left[1]-right[1]; c=-(left[2]-right[2])/ROOT_SCALE
     scale=max(abs(a),abs(b),abs(c))
     if scale<=CANONICAL_EPS:return [0.0,0.0,0.0]
     row=[a/scale,b/scale,c/scale]
@@ -306,7 +332,11 @@ def _canonical_numeric(src,fam):
         rows=[_canonical_row(q) for q in parts]
         if any(r is None for r in rows):return None
         rows=sorted(rows,key=lambda r:(r[0],r[1],r[2]))
-        return rows[0]+rows[1]
+        a1,b1,c1=rows[0]; a2,b2,c2=rows[1]
+        det=a1*b2-a2*b1; nx=c1*b2-c2*b1; ny=a1*c2-a2*c1
+        scale=max(abs(det),abs(nx),abs(ny))
+        inv=[0.0,0.0,0.0] if scale<=CANONICAL_EPS else [det/scale,nx/scale,ny/scale]
+        return rows[0]+rows[1]+[0.0 if abs(x)<1e-12 else x for x in inv]
     if fam in (LINEAR,POLYNOMIAL):return _canonical_poly(src,fam)
     return None
 
@@ -388,7 +418,7 @@ def android_adam_step(lr):
 
 PERMS=torch.tensor(list(__import__('itertools').permutations(range(ROOT_SLOTS))),device=device,dtype=torch.long)
 
-def loss_fn(out,roots,root_count,systems,states,families,other_out=None):
+def loss_fn(out,roots,root_count,systems,states,families,numeric,other_out=None):
     # state loss
     state_loss=F.cross_entropy(out[:,10:14],states)
     assigned_vals=torch.zeros((len(out),ROOT_SLOTS),device=device); assigned_pres=torch.zeros_like(assigned_vals)
@@ -409,7 +439,17 @@ def loss_fn(out,roots,root_count,systems,states,families,other_out=None):
     active=assigned_pres.sum(-1).clamp_min(1)
     root_loss=((((out[:,:5]-assigned_vals)**2)*assigned_pres).sum(-1)/active)[finite].mean() if finite.any() else out.sum()*0
     presence=F.binary_cross_entropy_with_logits(out[:,5:10],assigned_pres)
-    total=root_loss + .35*presence + .35*state_loss
+    residual=out.sum()*0
+    poly_ids=torch.where(finite & (families==POLYNOMIAL))[0]
+    if len(poly_ids):
+        coeff=numeric[poly_ids,:CANONICAL_COEFF_SLOTS].to(out.dtype)
+        z=out[poly_ids,:ROOT_SLOTS]
+        q=coeff[:,-1,None].expand(-1,ROOT_SLOTS)
+        for power in range(CANONICAL_COEFF_SLOTS-2,-1,-1):q=q*z+coeff[:,power,None]
+        mask=assigned_pres[poly_ids]
+        per=F.smooth_l1_loss(q,torch.zeros_like(q),reduction='none',beta=0.25)
+        residual=((per*mask).sum(-1)/mask.sum(-1).clamp_min(1)).mean()
+    total=root_loss + .35*presence + .35*state_loss + POLYNOMIAL_RESIDUAL_WEIGHT*residual
     if other_out is not None: total=total + CONSISTENCY_WEIGHT*F.mse_loss(out,other_out)
     return total
 
@@ -472,7 +512,7 @@ def canonical_equations(eq_strings):
     if len(syms)==2: repl[syms[1]]=sp.Symbol('y')
     out=[]
     for e in eqs:
-        out.append(str(e.lhs.subs(repl)).replace('**','^')+'='+str(e.rhs.subs(repl)).replace('**','^'))
+        out.append(str(e.lhs.subs(repl, simultaneous=True)).replace('**','^')+'='+str(e.rhs.subs(repl, simultaneous=True)).replace('**','^'))
     sol=sp.solve(eqs,syms,dict=True)
     return out,syms,sol,repl
 
@@ -641,7 +681,7 @@ for step_idx in range(adam_step+1, TOTAL_STEPS+1):
     k,n,d,f,r,rc,sy,st,eqv=collate(ex)
     out=model(k,n,d,f)
     other=model(*eqv) if eqv is not None else None
-    loss=loss_fn(out,r,rc,sy,st,f,other)
+    loss=loss_fn(out,r,rc,sy,st,f,n,other)
     loss.backward(); gnorm=android_adam_step(LEARNING_RATE)
     if step_idx%100==0:
         print(f"step {step_idx:6d}/{TOTAL_STEPS}  loss={float(loss):.6f}  grad={gnorm:.3f}")

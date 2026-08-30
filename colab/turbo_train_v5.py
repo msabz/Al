@@ -117,6 +117,9 @@ ROOT_SLOTS = ns["ROOT_SLOTS"]
 ROOT_SCALE = ns["ROOT_SCALE"]
 FINITE = ns["FINITE"]
 SYSTEM = ns["SYSTEM"]
+POLYNOMIAL = ns["POLYNOMIAL"]
+POLYNOMIAL_RESIDUAL_WEIGHT = ns["POLYNOMIAL_RESIDUAL_WEIGHT"]
+CANONICAL_COEFF_SLOTS = ns["CANONICAL_COEFF_SLOTS"]
 PERMS = ns["PERMS"]
 
 if device.type != "cuda":
@@ -205,6 +208,11 @@ def parse_scalar(text):
 
 def rename_var(text, old, new):
     return re.sub(rf"\b{re.escape(old)}\b", new, text)
+
+def rename_vars_simultaneous(text, mapping):
+    if not mapping: return text
+    pattern = r"\b(?:" + "|".join(re.escape(k) for k in sorted(mapping, key=len, reverse=True)) + r")\b"
+    return re.sub(pattern, lambda m: mapping[m.group(0)], text)
 
 
 def parse_linear_1d(question, answer):
@@ -299,11 +307,7 @@ def parse_linear_2d(question, answer):
         if abs(residual) > 1e-5 * max(1.0, abs(c)):
             raise ValueError("system verification")
     repl = {variables[0]: "x", variables[1]: "y"}
-    renamed = []
-    for eq in parts:
-        for old, new in repl.items():
-            eq = rename_var(eq, old, new)
-        renamed.append(eq)
+    renamed = [rename_vars_simultaneous(eq, repl) for eq in parts]
     system = [float(sol[variables[0]]), float(sol[variables[1]])]
     text = ";".join(renamed)
     return mk(text, system=system, equiv=";".join(reversed(renamed)))
@@ -532,7 +536,7 @@ def mixed_batch(batch_size):
     return (*merged, equiv)
 
 
-def stable_loss(out, roots, root_count, systems, states, families, other_out=None):
+def stable_loss(out, roots, root_count, systems, states, families, numeric, other_out=None):
     state_loss = F.cross_entropy(out[:,10:14], states)
     assigned_vals = torch.zeros((len(out), ROOT_SLOTS), device=device, dtype=out.dtype)
     assigned_pres = torch.zeros_like(assigned_vals)
@@ -567,11 +571,22 @@ def stable_loss(out, roots, root_count, systems, states, families, other_out=Non
     else:
         root_loss = out.sum() * 0
     presence = F.binary_cross_entropy_with_logits(out[:,5:10], assigned_pres)
+    residual = out.sum() * 0
+    poly_ids = torch.where(finite & (families == POLYNOMIAL))[0]
+    if len(poly_ids):
+        coeff = numeric[poly_ids,:CANONICAL_COEFF_SLOTS].to(out.dtype)
+        z = out[poly_ids,:ROOT_SLOTS]
+        q = coeff[:,-1,None].expand(-1,ROOT_SLOTS)
+        for power in range(CANONICAL_COEFF_SLOTS-2,-1,-1):
+            q = q * z + coeff[:,power,None]
+        mask = assigned_pres[poly_ids]
+        per_res = F.smooth_l1_loss(q, torch.zeros_like(q), reduction="none", beta=0.25)
+        residual = ((per_res * mask).sum(-1) / mask.sum(-1).clamp_min(1)).mean()
     consistency = out.sum() * 0
     if other_out is not None:
         consistency = F.smooth_l1_loss(out, other_out, beta=0.1)
-    total = root_loss + 0.35 * presence + 0.35 * state_loss + CONSISTENCY_WEIGHT * consistency
-    return total, root_loss, presence, state_loss, consistency
+    total = root_loss + 0.35 * presence + 0.35 * state_loss + POLYNOMIAL_RESIDUAL_WEIGHT * residual + CONSISTENCY_WEIGHT * consistency
+    return total, root_loss, presence, state_loss, residual, consistency
 
 
 def turbo_adam_step(lr):
@@ -633,7 +648,7 @@ if not BATCH_SIZE:
                 model.zero_grad(set_to_none=True)
                 with torch.autocast("cuda", dtype=torch.float16, enabled=USE_AMP):
                     o = train_model(k,n,d,f); oo = train_model(*eqv)
-                    loss, *_ = stable_loss(o,r,rc,sy,st,f,oo)
+                    loss, *_ = stable_loss(o,r,rc,sy,st,f,n,oo)
                 loss.backward()
             model.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
@@ -641,7 +656,7 @@ if not BATCH_SIZE:
             for _ in range(repeats):
                 with torch.autocast("cuda", dtype=torch.float16, enabled=USE_AMP):
                     o = train_model(k,n,d,f); oo = train_model(*eqv)
-                    loss, *_ = stable_loss(o,r,rc,sy,st,f,oo)
+                    loss, *_ = stable_loss(o,r,rc,sy,st,f,n,oo)
                 loss.backward(); model.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
             dt = (time.time()-t0)/repeats
@@ -705,7 +720,7 @@ for step_idx in range(start_step, TOTAL_STEPS + 1):
     with torch.autocast("cuda", dtype=torch.float16, enabled=USE_AMP):
         out = train_model(k,n,d,f)
         other = train_model(*eqv)
-        loss, root_l, pres_l, state_l, cons_l = stable_loss(out,r,rc,sy,st,f,other)
+        loss, root_l, pres_l, state_l, residual_l, cons_l = stable_loss(out,r,rc,sy,st,f,n,other)
 
     loss_value = float(loss.detach())
     if (not math.isfinite(loss_value)) or loss_value > 500.0:
@@ -731,7 +746,7 @@ for step_idx in range(start_step, TOTAL_STEPS + 1):
             f"TRAIN step={step_idx:6d}/{TOTAL_STEPS} "
             f"loss={loss_value:8.5f} root={float(root_l.detach()):7.4f} "
             f"pres={float(pres_l.detach()):6.4f} state={float(state_l.detach()):6.4f} "
-            f"cons={float(cons_l.detach()):6.4f} lr={lr:.2e} "
+            f"res={float(residual_l.detach()):6.4f} cons={float(cons_l.detach()):6.4f} lr={lr:.2e} "
             f"grad={grad_norm:8.3f} clip={clip_scale:5.3f} "
             f"throughput={samples_sec:,.0f} ex/s ETA={eta/60:.1f}m",
             flush=True,
