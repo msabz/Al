@@ -157,7 +157,7 @@ jobs:
               raise SystemExit(f'MAI5 unexpectedly small: {p.stat().st_size}')
           with p.open('rb') as fh:
               magic, version = struct.unpack('>ii', fh.read(8))
-          if magic != 0x4D414935 or version != 1:
+          if magic != 0x4D414935 or version != 2:
               raise SystemExit(f'Bad MAI5 header: magic={magic:#x} version={version}')
           audit = json.loads(pathlib.Path('trained-output/generalization_audit.json').read_text())
           verdict = audit.get('verdict', 'UNKNOWN')
