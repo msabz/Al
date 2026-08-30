@@ -1,0 +1,265 @@
+name: Kaggle GPU Train v5 MAI5-v3
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: math-ai-v5-kaggle-v3-gpu
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  train-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout exact v3 source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+
+      - name: Authenticate Kaggle
+        id: kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}" || { echo 'KAGGLE_API_TOKEN is missing'; exit 20; }
+          python - <<'PY'
+          import os
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi(); api.authenticate()
+          owner = (getattr(api, 'config_values', {}) or {}).get('username') or ''
+          if not owner: raise SystemExit('Kaggle username unavailable after authentication')
+          print('KAGGLE_AUTH_OK owner=' + owner)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write('owner=' + owner + '\n')
+              fh.write('kernel_ref=' + owner + '/math-ai-v5-turbo-trainer\n')
+          PY
+
+      - name: Prepare private T4 kernel
+        env:
+          KAGGLE_OWNER: ${{ steps.kaggle.outputs.owner }}
+        run: |
+          set -euo pipefail
+          rm -rf .kaggle-job
+          mkdir -p .kaggle-job
+          cp kaggle/kaggle_train.py .kaggle-job/math_ai_v5_kaggle.py
+          sed -i "s/__SOURCE_COMMIT__/${GITHUB_SHA}/g" .kaggle-job/math_ai_v5_kaggle.py
+          python -m py_compile .kaggle-job/math_ai_v5_kaggle.py
+          cat > .kaggle-job/kernel-metadata.json <<JSON
+          {
+            "id": "${KAGGLE_OWNER}/math-ai-v5-turbo-trainer",
+            "title": "Math AI v5 MAI5-v3 Trainer",
+            "code_file": "math_ai_v5_kaggle.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_internet": true,
+            "machine_shape": "NvidiaTeslaT4",
+            "dataset_sources": [],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          JSON
+          echo "Prepared MAI5-v3 kernel; source commit=${GITHUB_SHA}"
+
+      - name: Launch Kaggle T4 training
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p .kaggle-job --accelerator NvidiaTeslaT4 --timeout 18000 | tee /tmp/kaggle-push.log
+
+      - name: Monitor Kaggle GPU job
+        id: monitor
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          set -euo pipefail
+          outcome=timeout
+          for i in $(seq 1 330); do
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1 || true)"
+            echo "[$(date -u +%H:%M:%S)] ${status}"
+            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then outcome=complete; break; fi
+            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then outcome=failed; break; fi
+            sleep 60
+          done
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          test "${outcome}" = complete || { echo "Kaggle kernel outcome=${outcome}"; exit 30; }
+
+      - name: Download Kaggle outputs
+        if: always()
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          mkdir -p kaggle-output
+          kaggle kernels output "${KERNEL_REF}" -p kaggle-output -o --page-size 200 || true
+          find kaggle-output -maxdepth 3 -type f -printf '%p %k KB\n' | sort || true
+
+      - name: Normalize and verify MAI5-v3 outputs
+        id: result
+        if: steps.monitor.outputs.outcome == 'complete'
+        run: |
+          set -euo pipefail
+          mkdir -p trained-output
+          copy_one() {
+            name="$1"
+            src="$(find kaggle-output -type f -name "$name" -print -quit)"
+            test -n "$src" || { echo "Missing Kaggle output: $name"; exit 40; }
+            cp "$src" "trained-output/$name"
+          }
+          copy_one math_ai_v5_best.mai5
+          copy_one generalization_audit.json
+          copy_one training_report.json
+          copy_one LEARNING_EVIDENCE.txt
+          copy_one v5_interop_expected.tsv
+          copy_one kaggle_job_status.json
+          src="$(find kaggle-output -type f -name training_console.log -print -quit)" || true
+          test -z "$src" || cp "$src" trained-output/training_console.log
+          python - <<'PY'
+          import json, os, pathlib, struct
+          expected_banks = {
+              'interpolate_linear_1d', 'interpolate_linear_2d',
+              'interpolate_polynomial', 'extrapolate_polynomial'
+          }
+          model = pathlib.Path('trained-output/math_ai_v5_best.mai5')
+          if model.stat().st_size < 1_000_000:
+              raise SystemExit(f'MAI5 unexpectedly small: {model.stat().st_size}')
+          with model.open('rb') as fh:
+              magic, version = struct.unpack('>ii', fh.read(8))
+          if magic != 0x4D414935 or version != 3:
+              raise SystemExit(f'Bad MAI5-v3 header: magic={magic:#x} version={version}')
+          audit = json.loads(pathlib.Path('trained-output/generalization_audit.json').read_text())
+          if audit.get('schema') != 'DEEPMIND_ONLY_PER_FAMILY_V2':
+              raise SystemExit(f"Unexpected audit schema: {audit.get('schema')}")
+          if set(audit.get('banks', {})) != expected_banks:
+              raise SystemExit(f"Unexpected audit banks: {sorted(audit.get('banks', {}))}")
+          report = json.loads(pathlib.Path('trained-output/training_report.json').read_text())
+          if report.get('model', {}).get('format') != 'MAI5 v3':
+              raise SystemExit(f"Report model format mismatch: {report.get('model', {}).get('format')}")
+          if report.get('source_commit') != os.environ['GITHUB_SHA']:
+              raise SystemExit('Training report source commit mismatch')
+          status = json.loads(pathlib.Path('trained-output/kaggle_job_status.json').read_text())
+          if status.get('status') != 'TRAINING_COMPLETE':
+              raise SystemExit(f"Kaggle status not complete: {status}")
+          verdict = audit.get('verdict', 'UNKNOWN')
+          print('GENERALIZATION_VERDICT=' + verdict)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write('verdict=' + verdict + '\n')
+          PY
+
+      - name: Upload Kaggle v3 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v3-Kaggle-evidence
+          path: |
+            trained-output/**
+            kaggle-output/**
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce per-family generalization gate
+        if: steps.monitor.outputs.outcome == 'complete'
+        env:
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          echo "Generalization verdict: ${VERDICT}"
+          test "${VERDICT}" = PASS || { echo 'MAI5-v3 blocked: per-family DeepMind audit did not PASS.'; exit 42; }
+
+      - name: Embed verified MAI5-v3 and Python reference
+        if: steps.result.outputs.verdict == 'PASS'
+        run: |
+          mkdir -p app/src/main/assets
+          cp trained-output/math_ai_v5_best.mai5 app/src/main/assets/default_model.mai5
+          cp trained-output/v5_interop_expected.tsv app/src/main/assets/v5_interop_expected.tsv
+
+      - name: Set up JDK 11
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Set up Gradle cache
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Python-to-Kotlin MAI5-v3 gate and Android tests
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build verified debug APK
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare optional stable release keystore
+        if: steps.result.outputs.verdict == 'PASS'
+        env:
+          V5_KEYSTORE_B64: ${{ secrets.V5_KEYSTORE_B64 }}
+        run: |
+          if [ -n "${V5_KEYSTORE_B64}" ]; then
+            echo "${V5_KEYSTORE_B64}" | base64 -d > "$RUNNER_TEMP/math-ai-v5.jks"
+          fi
+
+      - name: Build signed release when signing secrets exist
+        if: steps.result.outputs.verdict == 'PASS'
+        env:
+          V5_KEYSTORE_PATH: ${{ runner.temp }}/math-ai-v5.jks
+          V5_KEYSTORE_PASSWORD: ${{ secrets.V5_KEYSTORE_PASSWORD }}
+          V5_KEY_ALIAS: ${{ secrets.V5_KEY_ALIAS }}
+          V5_KEY_PASSWORD: ${{ secrets.V5_KEY_PASSWORD }}
+        run: |
+          if [ -f "${V5_KEYSTORE_PATH}" ]; then
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            echo 'Stable release signing not configured; verified debug APK will be uploaded.'
+          fi
+
+      - name: Upload verified MAI5-v3 APK and model
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v3-VERIFIED
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+            trained-output/math_ai_v5_best.mai5
+            trained-output/training_report.json
+            trained-output/generalization_audit.json
+            trained-output/LEARNING_EVIDENCE.txt
+            trained-output/v5_interop_expected.tsv
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Write run summary
+        if: always()
+        env:
+          OWNER: ${{ steps.kaggle.outputs.owner }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+          OUTCOME: ${{ steps.monitor.outputs.outcome }}
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          {
+            echo '## Math AI v5 — MAI5 v3 Kaggle GPU'
+            echo "- Kaggle account: \`${OWNER}\`"
+            echo "- Kernel: \`${KERNEL_REF}\`"
+            echo "- Kaggle outcome: \`${OUTCOME}\`"
+            echo "- Generalization verdict: \`${VERDICT}\`"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
