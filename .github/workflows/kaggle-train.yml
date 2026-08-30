@@ -43,7 +43,7 @@ jobs:
           print('KAGGLE_AUTH_OK owner=' + owner)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
               fh.write('owner=' + owner + '\n')
-              fh.write('kernel_ref=' + owner + '/math-ai-v5-turbo-trainer\n')
+              fh.write('kernel_ref=' + owner + '/math-ai-v5-mai5-v3-trainer\n')
           PY
 
       - name: Prepare private T4 kernel
@@ -58,7 +58,7 @@ jobs:
           python -m py_compile .kaggle-job/math_ai_v5_kaggle.py
           cat > .kaggle-job/kernel-metadata.json <<JSON
           {
-            "id": "${KAGGLE_OWNER}/math-ai-v5-turbo-trainer",
+            "id": "${KAGGLE_OWNER}/math-ai-v5-mai5-v3-trainer",
             "title": "Math AI v5 MAI5-v3 Trainer",
             "code_file": "math_ai_v5_kaggle.py",
             "language": "python",
@@ -73,6 +73,18 @@ jobs:
             "model_sources": []
           }
           JSON
+          python - <<'PY'
+          import json, os, re
+          meta = json.load(open('.kaggle-job/kernel-metadata.json'))
+          owner = os.environ['KAGGLE_OWNER']
+          expected = owner + '/math-ai-v5-mai5-v3-trainer'
+          if meta['id'] != expected:
+              raise SystemExit(f'kernel id mismatch: {meta["id"]} != {expected}')
+          slug = re.sub(r'[^a-z0-9]+', '-', meta['title'].lower()).strip('-')
+          if slug != 'math-ai-v5-mai5-v3-trainer':
+              raise SystemExit(f'title slug mismatch: {slug}')
+          print('KAGGLE_V3_ID_TITLE_CONTRACT_OK', expected)
+          PY
           echo "Prepared MAI5-v3 kernel; source commit=${GITHUB_SHA}"
 
       - name: Launch Kaggle T4 training
