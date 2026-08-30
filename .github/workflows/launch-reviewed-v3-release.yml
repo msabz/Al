@@ -12,7 +12,7 @@ permissions:
   actions: write
 
 jobs:
-  dispatch-reviewed-v3:
+  preflight-and-dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,16 +22,44 @@ jobs:
           ref: feat/v5-deepmind-colab
           fetch-depth: 1
 
-      - name: Verify reviewed v3 workflow is routed through default-branch path
+      - name: Verify runtime SHA handoff without GPU
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          MATHAI_WORK_DIR: /tmp/mathai-v3-sha-preflight
         run: |
           set -euo pipefail
-          grep -q 'name: Kaggle GPU Train v5 MAI5-v3' .github/workflows/kaggle-train.yml
-          grep -q 'version != 3' .github/workflows/kaggle-train.yml
-          grep -q 'deepmind_only_train_v3.py' kaggle/kaggle_train.py
-          grep -q 'DEEPMIND_ONLY_PER_FAMILY_V2' colab/generalization_audit.py
-          echo REVIEWED_V3_DISPATCH_CONTRACT_OK
+          python -m py_compile kaggle/kaggle_train.py kaggle/deepmind_only_train_v3.py
+          python - <<'PY'
+          import os, pathlib, re
 
-      - name: Ensure no Kaggle training run is already active
+          sha = os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', sha), sha
+
+          entry = pathlib.Path('kaggle/kaggle_train.py').read_text()
+          assert 'text = target.read_text()\nexec(' in entry
+          assert '"SOURCE_COMMIT": SOURCE_COMMIT' in entry
+          assert 'target.read_text().replace("__SOURCE_COMMIT__", SOURCE_COMMIT)' not in entry
+
+          v3_path = pathlib.Path('kaggle/deepmind_only_train_v3.py')
+          v3 = v3_path.read_text()
+          assert 'SOURCE_COMMIT = globals().get("SOURCE_COMMIT")' in v3
+
+          marker = '\n\ntry:\n    core.main()\n    validate_release_outputs()\nfinally:\n    cleanup_large_temporaries()'
+          if marker not in v3:
+              raise SystemExit('Could not isolate v3 preflight prefix')
+          prefix = v3.replace(marker, '\n', 1)
+          ns = {
+              '__name__': 'v3_sha_handoff_preflight',
+              '__file__': str(v3_path),
+              'SOURCE_COMMIT': sha,
+          }
+          exec(compile(prefix, str(v3_path), 'exec'), ns)
+          assert ns['SOURCE_COMMIT'] == sha
+          assert ns['core'] is not None
+          print('V3_RUNTIME_SHA_HANDOFF_OK', sha)
+          PY
+
+      - name: Ensure no Kaggle training run is active
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
