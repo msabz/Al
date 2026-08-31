@@ -50,43 +50,39 @@ jobs:
           test -f run11/trained-output/generalization_audit.json
           python - <<'PY'
           import json, pathlib, struct, torch
-          p = pathlib.Path('run11/trained-output/math_ai_v5_best.mai5')
-          with p.open('rb') as f:
-              magic, version = struct.unpack('>ii', f.read(8))
-          assert magic == 0x4D414935 and version == 3, (hex(magic), version)
+          p=pathlib.Path('run11/trained-output/math_ai_v5_best.mai5')
+          with p.open('rb') as f: magic,version=struct.unpack('>ii',f.read(8))
+          assert magic==0x4D414935 and version==3,(hex(magic),version)
           audit=json.load(open('run11/trained-output/generalization_audit.json'))
           assert audit['schema']=='DEEPMIND_ONLY_PER_FAMILY_V2'
-          assert not torch.cuda.is_available(), 'diagnostic must be CPU-only'
-          print('RUN11_MAI5_V3_CPU_DIAGNOSTIC_CONTRACT_OK', p.stat().st_size)
+          assert not torch.cuda.is_available(),'diagnostic must be CPU-only'
+          print('RUN11_MAI5_V3_CPU_DIAGNOSTIC_CONTRACT_OK',p.stat().st_size)
           PY
 
-      - name: Calibrate polynomial presence threshold on official DeepMind only
+      - name: Deterministic polynomial presence calibration on official DeepMind only
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: |
           set -euo pipefail
-          python scripts/diagnose_run11_presence.py \
+          python scripts/diagnose_run11_presence_deterministic.py \
             --repo-root . \
             --checkpoint run11/trained-output/math_ai_v5_best.mai5 \
             --run11-audit run11/trained-output/generalization_audit.json \
-            --output diagnostic/run11_presence_calibration.json | tee diagnostic.log
+            --output diagnostic/run11_presence_deterministic.json | tee diagnostic.log
 
       - name: Print compact diagnosis
         run: |
           python - <<'PY'
           import json
-          d=json.load(open('diagnostic/run11_presence_calibration.json'))
-          print('selected_threshold=', d['selected_threshold'])
-          print('run11_gpu_reference_count_accuracy=', d['run11_gpu_reference_count_accuracy'])
-          print('cpu_minus_gpu_count_accuracy=', d['baseline_cpu_minus_run11_gpu_count_accuracy'])
-          for label,row in d['selected_threshold_on_frozen_audit_cpu'].items():
-              print(label, 'count=', round(row['root_count_accuracy']*100,2),
-                    'within1=', round(row['within_one_ratio']*100,2),
-                    'rmse=', round(row['rmse'],4),
-                    'missing=', row['missing_value_slots'], 'extra=', row['extra_value_slots'])
-          print('threshold_only_can_pass_count_gate=', d['threshold_only_can_pass_count_gate'])
-          print('oracle_threshold_can_pass_both_count_gates=', d['oracle_threshold_can_pass_both_count_gates'])
-          print('oracle=', json.dumps(d['oracle_best_on_frozen_audit_cpu_diagnostic_only'], indent=2))
+          d=json.load(open('diagnostic/run11_presence_deterministic.json'))
+          print('selected_threshold=',d['selected_threshold'])
+          print('run11_reference=',d['run11_original_audit_reference'])
+          print('validation_at_0.5=',json.dumps(d['validation_at_threshold_0_5'],indent=2))
+          print('selected_validation=',json.dumps(d['selected_threshold_on_disjoint_validation'],indent=2))
+          print('threshold_only_can_pass_count_gate=',d['threshold_only_can_pass_count_gate'])
+          print('oracle_threshold_can_pass_both_count_gates=',d['oracle_threshold_can_pass_both_count_gates'])
+          print('selected_threshold_can_pass_count_and_within1_floors=',d['selected_threshold_can_pass_count_and_within1_floors'])
+          print('oracle=',json.dumps(d['oracle_best_threshold_on_validation_diagnostic_only'],indent=2))
           PY
 
       - name: Upload CPU calibration evidence
@@ -94,6 +90,6 @@ jobs:
         with:
           name: Run11-Polynomial-Presence-Calibration
           path: |
-            diagnostic/run11_presence_calibration.json
+            diagnostic/run11_presence_deterministic.json
             diagnostic.log
           retention-days: 90
