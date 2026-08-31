@@ -1,0 +1,81 @@
+name: Validate v7 Intersection Routing on DeepMind
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - scripts/cpu_v7_intersection_routing_deepmind.py
+      - .github/workflows/validate-v7-intersection-routing.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-intersection-routing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact feature source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static experiment contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v7_intersection_routing_deepmind.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v7_intersection_routing_deepmind.py').read_text()
+          required=(
+              'OFFICIAL_DATA_CONTRACT',
+              'class IntersectionLattice3D',
+              '_implicit_residual',
+              'mutual_residual',
+              'distance_sq',
+              'gate = torch.exp(-energy / TEMPERATURE)',
+              'routed = numerator / (1.0 + gate_sum[None, :])',
+              'SEEDS = (11, 22, 33)',
+              'STEPS = 5000',
+              'V7_INTERSECTION_ROUTING_DEEPMIND_',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'missing intersection-routing markers: {missing}')
+          low=s.lower()
+          forbidden=('synthetic_pool', 'project synthetic', 'cuda')
+          found=[x for x in forbidden if x in low]
+          if found:
+              raise SystemExit(f'forbidden marker in CPU DeepMind experiment: {found}')
+          print('V7_INTERSECTION_ROUTING_STATIC_CONTRACT_PASS')
+          PY
+
+      - name: Run parameter-matched DeepMind routing comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v7_intersection_routing_deepmind.py | tee /tmp/v7-intersection-routing.log
+          grep -Eq 'V7_INTERSECTION_ROUTING_DEEPMIND_(IMPROVED_ROUTING|NO_IMPROVEMENT)' /tmp/v7-intersection-routing.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v7-intersection-routing-deepmind-cpu-evidence
+          path: /tmp/v7-intersection-routing.log
+          if-no-files-found: warn
+          retention-days: 30
