@@ -1,0 +1,84 @@
+name: Validate v8 Onion Manifold on DeepMind
+
+on:
+  push:
+    branches:
+      - feat/v8-onion-manifold-test
+    paths:
+      - scripts/cpu_v8_onion_manifold_deepmind.py
+      - .github/workflows/validate-v8-onion-manifold.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-onion-manifold:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static experiment contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v8_onion_manifold_deepmind.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v8_onion_manifold_deepmind.py').read_text()
+          required=(
+              'OFFICIAL_DATA_CONTRACT',
+              'BRANCHES = 6',
+              'DEPTH = 3',
+              'class ManifoldLinear',
+              'class OnionManifoldNet',
+              'GATE_INIT_LOGIT = -4.0',
+              'correctness_reward',
+              'plain_mean.detach() + compressed - compressed.detach()',
+              'torch.asinh(x) / COMPRESS_DIV',
+              'torch.sinh(COMPRESS_DIV * y)',
+              'SEEDS = (11, 22, 33)',
+              'STEPS = 5000',
+              'V8_ONION_MANIFOLD_DEEPMIND_',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'missing onion experiment markers: {missing}')
+          low=s.lower()
+          forbidden=('synthetic_pool', 'project synthetic', 'cuda')
+          found=[x for x in forbidden if x in low]
+          if found:
+              raise SystemExit(f'forbidden marker in CPU DeepMind experiment: {found}')
+          print('V8_ONION_STATIC_CONTRACT_PASS')
+          PY
+
+      - name: Run parameter-matched DeepMind onion comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v8_onion_manifold_deepmind.py | tee /tmp/v8-onion-manifold.log
+          grep -Eq 'V8_ONION_MANIFOLD_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' /tmp/v8-onion-manifold.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-onion-manifold-deepmind-cpu-evidence
+          path: /tmp/v8-onion-manifold.log
+          if-no-files-found: warn
+          retention-days: 30
