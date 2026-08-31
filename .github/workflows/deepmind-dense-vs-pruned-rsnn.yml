@@ -1,0 +1,92 @@
+name: DeepMind Dense vs Pruned RSNN Ablation
+
+on:
+  push:
+    branches:
+      - feat/pruned-snn-vs-mlp
+    paths:
+      - scripts/pruned_snn_vs_mlp.py
+      - scripts/deepmind_pruned_snn_stress.py
+      - scripts/deepmind_dense_vs_pruned_rsnn.py
+      - .github/workflows/deepmind-dense-vs-pruned-rsnn.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dense-vs-pruned-rsnn-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static ablation contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/pruned_snn_vs_mlp.py scripts/deepmind_pruned_snn_stress.py scripts/deepmind_dense_vs_pruned_rsnn.py
+          grep -q 'DENSE_RSNN' scripts/deepmind_dense_vs_pruned_rsnn.py
+          grep -q 'PRUNED_RSNN' scripts/deepmind_dense_vs_pruned_rsnn.py
+          grep -q 'ORDINARY_MLP' scripts/deepmind_dense_vs_pruned_rsnn.py
+          grep -q 'project synthetic data=0' scripts/deepmind_dense_vs_pruned_rsnn.py
+          echo 'DENSE_PRUNED_STATIC_CONTRACT_PASS'
+
+      - name: Verify identical SNN initialization and pruning isolation
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_dense_vs_pruned_rsnn.py --preflight | tee /tmp/dense-pruned-preflight.log
+          grep -q 'DENSE_PRUNED_PREFLIGHT_PASS' /tmp/dense-pruned-preflight.log
+
+      - name: Run exact 5-seed DeepMind ablation
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_dense_vs_pruned_rsnn.py \
+            --train-size 8192 \
+            --eval-size 2048 \
+            --ill-pool-size 4096 \
+            --ill-size 1024 \
+            --epochs 300 \
+            --batch-size 256 \
+            --seeds 11,22,33,44,55 \
+            --output-dir deepmind-dense-vs-pruned-output | tee /tmp/dense-vs-pruned.log
+          grep -q 'PARAMETER_MATCH DENSE_RSNN=26880 PRUNED_RSNN=26880 MLP=26880' /tmp/dense-vs-pruned.log
+          grep -q 'project synthetic data=0' /tmp/dense-vs-pruned.log
+          grep -q 'target=0.3000' /tmp/dense-vs-pruned.log
+          grep -q 'DENSE_VS_PRUNED_DEEPMIND_COMPLETE' /tmp/dense-vs-pruned.log
+
+      - name: Print final ablation summary
+        if: always()
+        run: |
+          echo '===== DENSE VS PRUNED RSNN SUMMARY ====='
+          cat deepmind-dense-vs-pruned-output/SUMMARY.txt 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 140 /tmp/dense-vs-pruned.log 2>/dev/null || true
+
+      - name: Upload ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepmind-dense-vs-pruned-rsnn-ablation-evidence
+          path: |
+            deepmind-dense-vs-pruned-output/**
+            /tmp/dense-pruned-preflight.log
+            /tmp/dense-vs-pruned.log
+          if-no-files-found: warn
+          retention-days: 90
