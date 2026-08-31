@@ -1,0 +1,107 @@
+name: Validate MAI5 v4 Polynomial Cardinality Head
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/validate-v4-cardinality-head.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout reviewed feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply single cardinality migration in worktree
+        run: |
+          set -euo pipefail
+          python scripts/apply_v4_cardinality_head.py
+          git diff --check
+          grep -q 'const val FILE_VERSION = 4' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'MAGIC=0x4D414935; VERSION=4' colab/train_v5_deepmind.py
+          grep -q 'root-count logits' app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt
+          grep -q 'def polynomial_active_indices' colab/train_v5_deepmind.py
+          grep -q 'cardinality_per' colab/turbo_train_v5.py
+
+      - name: Python static contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/apply_v4_cardinality_head.py \
+            scripts/cpu_v4_cardinality_overfit.py \
+            colab/train_v5_deepmind.py \
+            colab/turbo_train_v5.py \
+            colab/generalization_audit.py
+          python - <<'PY'
+          from pathlib import Path
+          base=Path('colab/train_v5_deepmind.py').read_text()
+          turbo=Path('colab/turbo_train_v5.py').read_text()
+          kt=Path('app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt').read_text()
+          assert 'VERSION=4' in base
+          assert 'count_target=root_count[poly_ids].clamp(1,ROOT_SLOTS)-1' in base
+          assert 'nonpoly_match=(families[ids]!=POLYNOMIAL)' in base
+          assert 'count_target = root_count[poly_ids].clamp(1, ROOT_SLOTS) - 1' in turbo
+          assert 'family != EquationFamily.POLYNOMIAL' in kt
+          assert 'polynomialResidual(c.encoding' in kt
+          print('V4_STATIC_CARDINALITY_CONTRACT_PASS')
+          PY
+
+      - name: Android semantic mirror tests
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Install CPU-only research sanity dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: One official-DeepMind polynomial overfit sanity
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v4_cardinality_overfit.py --repo-root . --examples 32 --max-steps 1400 | tee v4-cardinality-sanity.log
+          grep -q 'V4_CARDINALITY_SANITY_PASS' v4-cardinality-sanity.log
+
+      - name: Commit only after every gate passes
+        run: |
+          set -euo pipefail
+          git status --short
+          git config user.name 'msabz'
+          git config user.email '36938563+msabz@users.noreply.github.com'
+          git add \
+            app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt \
+            app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt \
+            colab/train_v5_deepmind.py \
+            colab/turbo_train_v5.py \
+            colab/generalization_audit.py
+          git diff --cached --exit-code && { echo 'No migration diff to commit'; exit 1; } || true
+          git commit -m 'MAI5 v4: polynomial cardinality head with residual top-k'
+          git push origin HEAD:feat/v5-deepmind-colab
+
+      - name: Upload one-shot validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAI5-v4-cardinality-validation
+          path: v4-cardinality-sanity.log
+          if-no-files-found: ignore
+          retention-days: 90
