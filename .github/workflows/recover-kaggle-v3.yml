@@ -1,0 +1,176 @@
+name: Recover Existing MAI5 v3 Kaggle Run
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/recover-kaggle-v3.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      KERNEL_REF: musabalzoubi/math-ai-v5-mai5-v3-trainer
+      TRAINING_SOURCE_SHA: d61c92b506acd18b4774787fe81240e6d5ad7f3b
+    steps:
+      - name: Checkout reviewed v3 source
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+
+      - name: Authenticate Kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}" || { echo 'KAGGLE_API_TOKEN missing'; exit 20; }
+          kaggle --version
+
+      - name: Monitor exact already-pushed v3 kernel
+        id: monitor
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          outcome=timeout
+          for i in $(seq 1 330); do
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1 || true)"
+            echo "[$(date -u +%H:%M:%S)] ${status}"
+            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then outcome=complete; break; fi
+            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then outcome=failed; break; fi
+            if printf '%s' "${lower}" | grep -Eq '404|not found'; then echo 'Correct v3 kernel slug is not resolvable'; exit 31; fi
+            sleep 60
+          done
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          test "${outcome}" = complete || { echo "Existing Kaggle kernel outcome=${outcome}"; exit 30; }
+
+      - name: Download outputs from existing kernel
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf kaggle-output trained-output
+          mkdir -p kaggle-output trained-output
+          kaggle kernels output "${KERNEL_REF}" -p kaggle-output -o --page-size 200
+          find kaggle-output -maxdepth 3 -type f -printf '%p %k KB\n' | sort
+
+      - name: Normalize and verify MAI5-v3 outputs
+        id: result
+        run: |
+          set -euo pipefail
+          copy_one() {
+            name="$1"
+            src="$(find kaggle-output -type f -name "$name" -print -quit)"
+            test -n "$src" || { echo "Missing Kaggle output: $name"; exit 40; }
+            cp "$src" "trained-output/$name"
+          }
+          copy_one math_ai_v5_best.mai5
+          copy_one generalization_audit.json
+          copy_one training_report.json
+          copy_one LEARNING_EVIDENCE.txt
+          copy_one v5_interop_expected.tsv
+          copy_one kaggle_job_status.json
+          src="$(find kaggle-output -type f -name training_console.log -print -quit)" || true
+          test -z "$src" || cp "$src" trained-output/training_console.log
+          python - <<'PY'
+          import json, os, pathlib, struct
+          expected_banks = {
+              'interpolate_linear_1d', 'interpolate_linear_2d',
+              'interpolate_polynomial', 'extrapolate_polynomial'
+          }
+          model = pathlib.Path('trained-output/math_ai_v5_best.mai5')
+          if model.stat().st_size < 1_000_000:
+              raise SystemExit(f'MAI5 unexpectedly small: {model.stat().st_size}')
+          with model.open('rb') as fh:
+              magic, version = struct.unpack('>ii', fh.read(8))
+          if magic != 0x4D414935 or version != 3:
+              raise SystemExit(f'Bad MAI5-v3 header: magic={magic:#x} version={version}')
+          audit = json.loads(pathlib.Path('trained-output/generalization_audit.json').read_text())
+          if audit.get('schema') != 'DEEPMIND_ONLY_PER_FAMILY_V2':
+              raise SystemExit(f"Unexpected audit schema: {audit.get('schema')}")
+          if set(audit.get('banks', {})) != expected_banks:
+              raise SystemExit(f"Unexpected audit banks: {sorted(audit.get('banks', {}))}")
+          report = json.loads(pathlib.Path('trained-output/training_report.json').read_text())
+          if report.get('source_commit') != os.environ['TRAINING_SOURCE_SHA']:
+              raise SystemExit(f"Training source mismatch: {report.get('source_commit')}")
+          status = json.loads(pathlib.Path('trained-output/kaggle_job_status.json').read_text())
+          if status.get('status') != 'TRAINING_COMPLETE':
+              raise SystemExit(f"Kaggle status not complete: {status}")
+          verdict = audit.get('verdict', 'UNKNOWN')
+          print('GENERALIZATION_VERDICT=' + verdict)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write('verdict=' + verdict + '\n')
+          PY
+
+      - name: Upload recovered evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v3-RECOVERED-evidence
+          path: |
+            trained-output/**
+            kaggle-output/**
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce per-family DeepMind quality gate
+        env:
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          echo "Generalization verdict: ${VERDICT}"
+          test "${VERDICT}" = PASS || { echo 'MAI5-v3 blocked by per-family DeepMind audit.'; exit 42; }
+
+      - name: Embed verified model
+        if: steps.result.outputs.verdict == 'PASS'
+        run: |
+          mkdir -p app/src/main/assets
+          cp trained-output/math_ai_v5_best.mai5 app/src/main/assets/default_model.mai5
+          cp trained-output/v5_interop_expected.tsv app/src/main/assets/v5_interop_expected.tsv
+
+      - name: Set up JDK 11
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: temurin
+
+      - name: Set up Gradle
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Kotlin interop and Android tests
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build verified debug APK
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload verified recovered APK and model
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v3-RECOVERED-VERIFIED
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            trained-output/math_ai_v5_best.mai5
+            trained-output/training_report.json
+            trained-output/generalization_audit.json
+            trained-output/LEARNING_EVIDENCE.txt
+            trained-output/v5_interop_expected.tsv
+          if-no-files-found: error
+          retention-days: 90

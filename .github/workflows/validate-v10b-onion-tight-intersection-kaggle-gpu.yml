@@ -1,0 +1,252 @@
+name: Validate v10b Tight Onion on Kaggle T4 GPU
+
+on:
+  push:
+    branches:
+      - feat/v10b-onion-tight-intersection-test
+    paths:
+      - .github/workflows/validate-v10b-onion-tight-intersection-kaggle-gpu.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v10b-tight-onion-kaggle-t4-gpu
+  cancel-in-progress: false
+
+jobs:
+  launch-and-monitor-kaggle-gpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+
+      - name: Authenticate Kaggle
+        id: kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}" || { echo 'KAGGLE_API_TOKEN is missing'; exit 20; }
+          python - <<'PY'
+          import os
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi(); api.authenticate()
+          owner = (getattr(api, 'config_values', {}) or {}).get('username') or ''
+          if not owner:
+              raise SystemExit('Kaggle username unavailable after authentication')
+          print('KAGGLE_AUTH_OK owner=' + owner)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write('owner=' + owner + '\n')
+              fh.write('kernel_ref=' + owner + '/math-ai-v10b-tight-onion-gpu-test\n')
+          PY
+
+      - name: Prepare exact v10b experiment for CUDA
+        env:
+          KAGGLE_OWNER: ${{ steps.kaggle.outputs.owner }}
+        run: |
+          set -euo pipefail
+          rm -rf .kaggle-v10b-gpu
+          mkdir -p .kaggle-v10b-gpu
+          cp scripts/cpu_v6_manifold_lattice_deepmind.py .kaggle-v10b-gpu/
+          cp scripts/cpu_v9_onion_corrected_deepmind.py .kaggle-v10b-gpu/
+          cp scripts/cpu_v10_onion_sparse_intersection_deepmind.py .kaggle-v10b-gpu/
+          cp scripts/cpu_v10b_onion_tight_intersection_deepmind.py .kaggle-v10b-gpu/
+
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.kaggle-v10b-gpu')
+          base = root / 'cpu_v6_manifold_lattice_deepmind.py'
+          text = base.read_text()
+          text = text.replace('DEVICE = torch.device("cpu")', 'DEVICE = torch.device("cuda")', 1)
+          old = '''    return Bank(\n        torch.tensor(np.stack(xs), dtype=torch.float32),\n        torch.tensor(np.stack(ys), dtype=torch.float32),\n        torch.tensor(ds, dtype=torch.long),\n    )'''
+          new = '''    return Bank(\n        torch.tensor(np.stack(xs), dtype=torch.float32, device=DEVICE),\n        torch.tensor(np.stack(ys), dtype=torch.float32, device=DEVICE),\n        torch.tensor(ds, dtype=torch.long, device=DEVICE),\n    )'''
+          if old not in text:
+              raise SystemExit('GPU_PATCH_FAILED: base Bank return contract not found')
+          text = text.replace(old, new, 1)
+          base.write_text(text)
+
+          v10 = root / 'cpu_v10_onion_sparse_intersection_deepmind.py'
+          text = v10.read_text()
+          text = text.replace('DEVICE = torch.device("cpu")', 'DEVICE = torch.device("cuda")', 1)
+          text = text.replace('print("DEVICE=cpu")', 'print("DEVICE=cuda GPU=" + torch.cuda.get_device_name(0))', 1)
+          old_ids = 'ids = torch.randint(0, len(train.features), (BATCH,), generator=batch_rng)'
+          new_ids = 'ids = torch.randint(0, len(train.features), (BATCH,), generator=batch_rng).to(train.features.device)'
+          if old_ids not in text:
+              raise SystemExit('GPU_PATCH_FAILED: v10 batch-index contract not found')
+          text = text.replace(old_ids, new_ids, 1)
+          v10.write_text(text)
+
+          # v10b remains mathematically identical: MEET_RADIUS=0.001, MEET_TEMP=0.00025.
+          check = (root / 'cpu_v10b_onion_tight_intersection_deepmind.py').read_text()
+          assert 'v10.MEET_RADIUS = 0.001' in check
+          assert 'v10.MEET_TEMP = 0.00025' in check
+          print('GPU_PATCH_OK exact v10b math retained')
+          PY
+
+          cat > .kaggle-v10b-gpu/run_v10b_gpu.py <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import sys
+          import time
+          import torch
+
+          out = pathlib.Path('/kaggle/working')
+          out.mkdir(parents=True, exist_ok=True)
+          status_path = out / 'v10b_gpu_status.json'
+
+          if not torch.cuda.is_available():
+              status_path.write_text(json.dumps({'status': 'NO_CUDA'}, indent=2))
+              raise SystemExit('CUDA_REQUIRED_BUT_UNAVAILABLE')
+
+          gpu = torch.cuda.get_device_name(0)
+          print('CUDA_AVAILABLE=True')
+          print('GPU_NAME=' + gpu)
+          print('CUDA_VERSION=' + str(torch.version.cuda))
+
+          def run_stage(name, args, log_name):
+              started = time.time()
+              log_path = out / log_name
+              with log_path.open('w') as log:
+                  proc = subprocess.Popen(
+                      [sys.executable, 'cpu_v10b_onion_tight_intersection_deepmind.py', *args],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                      bufsize=1,
+                  )
+                  assert proc.stdout is not None
+                  for line in proc.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                      log.flush()
+                  rc = proc.wait()
+              elapsed = time.time() - started
+              print(f'{name}_RC={rc} ELAPSED_SEC={elapsed:.1f}')
+              if rc != 0:
+                  raise SystemExit(rc)
+              return elapsed
+
+          try:
+              preflight_s = run_stage('PREFLIGHT', ['--preflight'], 'v10b-gpu-preflight.log')
+              train_s = run_stage('TRAIN', [], 'v10b-tight-onion-gpu.log')
+              status = {
+                  'status': 'COMPLETE',
+                  'gpu': gpu,
+                  'cuda_version': torch.version.cuda,
+                  'preflight_seconds': preflight_s,
+                  'train_seconds': train_s,
+              }
+              status_path.write_text(json.dumps(status, indent=2))
+              print('V10B_GPU_COMPLETE', status)
+          except BaseException as exc:
+              status_path.write_text(json.dumps({
+                  'status': 'FAILED',
+                  'gpu': gpu,
+                  'error': repr(exc),
+              }, indent=2))
+              raise
+          PY
+
+          cat > .kaggle-v10b-gpu/kernel-metadata.json <<JSON
+          {
+            "id": "${KAGGLE_OWNER}/math-ai-v10b-tight-onion-gpu-test",
+            "title": "Math AI v10b Tight Onion GPU Test",
+            "code_file": "run_v10b_gpu.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_internet": true,
+            "machine_shape": "NvidiaTeslaT4",
+            "dataset_sources": [],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          JSON
+
+          python -m py_compile .kaggle-v10b-gpu/*.py
+          echo "Prepared exact v10b test for Kaggle T4; source commit=${GITHUB_SHA}"
+
+      - name: Launch Kaggle T4 GPU test
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p .kaggle-v10b-gpu --accelerator NvidiaTeslaT4 --timeout 18000 | tee /tmp/kaggle-v10b-gpu-push.log
+
+      - name: Monitor Kaggle GPU test
+        id: monitor
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          set -euo pipefail
+          outcome=timeout
+          for i in $(seq 1 330); do
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1 || true)"
+            echo "[$(date -u +%H:%M:%S)] ${status}"
+            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then outcome=complete; break; fi
+            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then outcome=failed; break; fi
+            sleep 60
+          done
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          test "${outcome}" = complete || { echo "Kaggle kernel outcome=${outcome}"; exit 30; }
+
+      - name: Download Kaggle GPU evidence
+        if: always()
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          mkdir -p kaggle-v10b-gpu-output
+          kaggle kernels output "${KERNEL_REF}" -p kaggle-v10b-gpu-output -o --page-size 200 || true
+          find kaggle-v10b-gpu-output -maxdepth 3 -type f -printf '%p %k KB\n' | sort || true
+
+      - name: Verify GPU execution evidence
+        if: steps.monitor.outputs.outcome == 'complete'
+        run: |
+          set -euo pipefail
+          status="$(find kaggle-v10b-gpu-output -type f -name v10b_gpu_status.json -print -quit)"
+          log="$(find kaggle-v10b-gpu-output -type f -name v10b-tight-onion-gpu.log -print -quit)"
+          test -n "$status" || { echo 'Missing v10b_gpu_status.json'; exit 40; }
+          test -n "$log" || { echo 'Missing v10b-tight-onion-gpu.log'; exit 41; }
+          python - "$status" <<'PY'
+          import json, sys
+          s = json.load(open(sys.argv[1]))
+          print('GPU_STATUS', s)
+          if s.get('status') != 'COMPLETE':
+              raise SystemExit('GPU run did not complete')
+          if not s.get('gpu'):
+              raise SystemExit('GPU identity missing')
+          PY
+          grep -Eq 'V10_SPARSE_ONION_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' "$log"
+
+      - name: Upload v10b Kaggle GPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10b-tight-onion-deepmind-kaggle-t4-gpu-evidence
+          path: |
+            kaggle-v10b-gpu-output/**
+            /tmp/kaggle-v10b-gpu-push.log
+          if-no-files-found: warn
+          retention-days: 30

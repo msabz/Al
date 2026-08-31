@@ -13,21 +13,12 @@
         android:roundIcon="@drawable/ic_math_lab"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
-        <service
-            android:name=".ai.TrainingService"
-            android:exported="false"
-            android:stopWithTask="false" />
-        <receiver
-            android:name=".ai.TrainingStopReceiver"
-            android:exported="false" />
-        <receiver
-            android:name=".ai.TrainingBootReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
+        <service android:name=".ai.TrainingService" android:exported="false" android:stopWithTask="false" />
+        <receiver android:name=".ai.TrainingStopReceiver" android:exported="false" />
+        <receiver android:name=".ai.TrainingBootReceiver" android:enabled="true" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>
+        <activity android:name=".SettingsActivity" />
         <activity android:name=".ReinforcementActivity" />
         <activity android:name=".TestActivity" />
         <activity android:name=".TrainingActivity" />

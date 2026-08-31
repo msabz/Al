@@ -1,0 +1,56 @@
+name: Diagnose Existing MAI5 v3 Kaggle Error
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/diagnose-kaggle-v3-error.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KERNEL_REF: musabalzoubi/math-ai-v5-mai5-v3-trainer
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Authenticate and dump existing kernel diagnostics only
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -u
+          test -n "${KAGGLE_API_TOKEN:-}" || exit 20
+          mkdir -p diag/output diag/pull
+          echo '=== STATUS ==='
+          kaggle kernels status "${KERNEL_REF}" 2>&1 | tee diag/status.txt || true
+          echo '=== OUTPUT DOWNLOAD ==='
+          kaggle kernels output "${KERNEL_REF}" -p diag/output -o --page-size 200 2>&1 | tee diag/output-command.txt || true
+          echo '=== PULL KERNEL SOURCE/METADATA ==='
+          kaggle kernels pull "${KERNEL_REF}" -p diag/pull -m 2>&1 | tee diag/pull-command.txt || true
+          echo '=== FILES ==='
+          find diag -type f -printf '%p %s bytes\n' | sort
+          echo '=== TEXT CONTENTS ==='
+          while IFS= read -r f; do
+            case "$f" in
+              *.txt|*.log|*.json|*.py|*.ipynb)
+                echo "----- $f -----"
+                sed -n '1,400p' "$f" || true
+                ;;
+            esac
+          done < <(find diag -type f | sort)
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAI5-v3-Kaggle-error-diagnostics
+          path: diag/**
+          if-no-files-found: warn
+          retention-days: 30

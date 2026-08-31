@@ -1,0 +1,66 @@
+name: Launch DeepMind Only Release
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/launch-deepmind-only.yml"]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  preflight-and-launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+
+      - name: DeepMind-only contract preflight
+        run: |
+          set -euo pipefail
+          python -m py_compile kaggle/kaggle_train.py kaggle/deepmind_only_train.py
+          python - <<'PY'
+          from pathlib import Path
+          entry = Path('kaggle/kaggle_train.py').read_text()
+          dm = Path('kaggle/deepmind_only_train.py').read_text()
+          checks = {
+              'entrypoint uses DeepMind-only trainer': 'deepmind_only_train.py' in entry,
+              '100 percent DeepMind': 'core.DEEPMIND_RATIO = 1.0' in dm,
+              'zero project synthetic pool': 'core.SYNTHETIC_POOL_SIZE = 0' in dm,
+              'zero project augmentation loss': 'core.CONSISTENCY_WEIGHT = 0.0' in dm,
+              'official train splits declared': 'train-easy / train-medium / train-hard' in dm,
+              'official equation modules declared': 'algebra__linear_1d / algebra__linear_2d / algebra__polynomial_roots' in dm,
+              'synthetic generator call absent': 'synthetic(syn_rng' not in dm,
+              'audit synthetic fallback forbidden': '__PROJECT_SYNTHETIC_FORBIDDEN__' in dm,
+              'linear2d whitespace parser fix present': 'expr.strip().replace' in dm,
+              'coverage guard present': 'DeepMind coverage guard failed' in dm,
+          }
+          for name, ok in checks.items():
+              print(('OK   ' if ok else 'FAIL ') + name)
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit('DEEPMIND_ONLY_PREFLIGHT_FAILED: ' + ', '.join(failed))
+
+          # Simulate the exact GitHub SHA injection before touching Kaggle.
+          dummy_sha = '0123456789abcdef0123456789abcdef01234567'
+          injected = entry.replace('__SOURCE_COMMIT__', dummy_sha)
+          if '__SOURCE_COMMIT__' in injected:
+              raise SystemExit('ENTRYPOINT_INJECTION_PREFLIGHT_FAILED: placeholder remains')
+          compile(injected, 'injected_kaggle_train.py', 'exec')
+          prefix = injected.split('\nurl = ', 1)[0]
+          ns = {}
+          exec(compile(prefix, 'injected_kaggle_train_prefix.py', 'exec'), ns, ns)
+          if ns.get('SOURCE_COMMIT') != dummy_sha:
+              raise SystemExit('ENTRYPOINT_INJECTION_PREFLIGHT_FAILED: wrong SOURCE_COMMIT')
+          print('ENTRYPOINT_INJECTION_PREFLIGHT_OK')
+          print('DEEPMIND_ONLY_PREFLIGHT_OK')
+          PY
+
+      - name: Dispatch one DeepMind-only Kaggle run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run kaggle-train.yml --ref feat/v5-deepmind-colab
+          echo "DEEPMIND_ONLY_KAGGLE_DISPATCHED"

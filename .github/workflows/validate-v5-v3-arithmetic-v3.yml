@@ -1,0 +1,108 @@
+name: Validate v5 v3 Arithmetic Representation v3
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths:
+      - "scripts/apply_v5_v3_arithmetic_residual.py"
+      - "scripts/fix_v3_migration_anchor.py"
+      - "scripts/cpu_v3_math_contract_preflight.py"
+      - ".github/workflows/validate-v5-v3-arithmetic-v3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU validation dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install -q --upgrade pip
+          python -m pip install -q numpy sympy absl-py six
+          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          python - <<'PY'
+          import numpy, sympy, torch
+          assert not torch.cuda.is_available(), 'CPU preflight unexpectedly has CUDA'
+          print('V3_CPU_DEPS_OK', numpy.__version__, sympy.__version__, torch.__version__)
+          PY
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: temurin
+
+      - name: Apply deterministic v3 migration in working tree
+        run: |
+          python scripts/fix_v3_migration_anchor.py
+          python scripts/apply_v5_v3_arithmetic_residual.py
+
+      - name: Static Python and contract gates
+        run: |
+          set -euo pipefail
+          python -m py_compile colab/train_v5_deepmind.py colab/turbo_train_v5.py kaggle/deepmind_only_train.py scripts/cpu_v3_math_contract_preflight.py
+          grep -q 'const val FILE_VERSION = 3' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'VERSION=3' colab/train_v5_deepmind.py
+          grep -q 'POLYNOMIAL_RESIDUAL_WEIGHT' colab/turbo_train_v5.py
+          grep -q 'SYSTEM_FEATURE_SLOTS = 9' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'POLYNOMIAL_FEATURE_SLOTS = 7' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          echo V3_STATIC_CONTRACT_OK
+
+      - name: Android unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: CPU-only DeepMind mathematical preflight
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v3_math_contract_preflight.py | tee v3_cpu_preflight.log
+          grep -q V3_CPU_MATH_CONTRACT_PASS v3_cpu_preflight.log
+          grep -q 'project_synthetic_examples=0' v3_cpu_preflight.log
+
+      - name: Confirm no GPU training workflow was launched
+        run: echo 'No Kaggle push/dispatch and no CUDA training exists in this validation job.'
+
+      - name: Commit validated production changes only
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt \
+            app/src/main/java/com/example/equationsolver/ai/StructuralMathEncoder.kt \
+            app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt \
+            app/src/test/java/com/example/equationsolver/ai/CanonicalNumericEncoderTest.kt \
+            app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt \
+            colab/train_v5_deepmind.py \
+            colab/turbo_train_v5.py \
+            kaggle/deepmind_only_train.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No production changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Use root-scaled arithmetic features and polynomial residual loss'
+          git push origin HEAD:feat/v5-deepmind-colab
+
+      - name: Upload CPU validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-v3-CPU-preflight-v3
+          path: v3_cpu_preflight.log
+          if-no-files-found: warn
+          retention-days: 30

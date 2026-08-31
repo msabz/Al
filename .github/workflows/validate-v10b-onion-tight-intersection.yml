@@ -1,0 +1,68 @@
+name: Validate v10b Tight Onion on DeepMind
+
+on:
+  push:
+    branches:
+      - feat/v10b-onion-tight-intersection-test
+    paths:
+      - scripts/cpu_v10b_onion_tight_intersection_deepmind.py
+      - .github/workflows/validate-v10b-onion-tight-intersection.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-tight-onion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static calibrated contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v9_onion_corrected_deepmind.py
+          python -m py_compile scripts/cpu_v10_onion_sparse_intersection_deepmind.py
+          python -m py_compile scripts/cpu_v10b_onion_tight_intersection_deepmind.py
+          grep -q 'MEET_RADIUS = 0.001' scripts/cpu_v10b_onion_tight_intersection_deepmind.py
+          grep -q 'MEET_TEMP = 0.00025' scripts/cpu_v10b_onion_tight_intersection_deepmind.py
+
+      - name: Geometry and safety preflight
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v10b_onion_tight_intersection_deepmind.py --preflight | tee /tmp/v10b-preflight.log
+          grep -q 'V10_PREFLIGHT_PASS' /tmp/v10b-preflight.log
+
+      - name: Run parameter-matched DeepMind comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v10b_onion_tight_intersection_deepmind.py | tee /tmp/v10b-tight-onion.log
+          grep -Eq 'V10_SPARSE_ONION_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' /tmp/v10b-tight-onion.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10b-tight-onion-deepmind-cpu-evidence
+          path: |
+            /tmp/v10b-preflight.log
+            /tmp/v10b-tight-onion.log
+          if-no-files-found: warn
+          retention-days: 30

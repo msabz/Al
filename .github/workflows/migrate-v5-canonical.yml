@@ -1,0 +1,92 @@
+name: Migrate v5 Canonical Numeric Architecture
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/migrate-v5-canonical.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: temurin
+
+      - name: Apply deterministic migration
+        run: |
+          set -euo pipefail
+          python scripts/migrate_v5_canonical_numeric.py
+          python scripts/update_v5_tests_for_canonical.py
+
+      - name: Static contract checks
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            colab/train_v5_deepmind.py \
+            colab/turbo_train_v5.py \
+            kaggle/deepmind_only_train.py \
+            kaggle/kaggle_train.py
+          grep -q 'const val FILE_VERSION = 2' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val SHARED_1 = 96' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val SHARED_2 = 64' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val HEAD_HIDDEN = 48' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q '167800' colab/train_v5_deepmind.py
+          grep -q 'assertEquals(167_800, n.parameterCount())' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
+          grep -q 'CANONICAL_COEFF_SLOTS, e.nodeCount' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
+          grep -q 'canonical numeric coefficients for linear/poly/system' kaggle/deepmind_only_train.py
+          grep -q 'curriculum: easy -> easy+medium -> easy+medium+hard' kaggle/deepmind_only_train.py
+          grep -q 'Synthetic pool  : DISABLED' kaggle/deepmind_only_train.py
+          grep -q 'Augmentation    : DISABLED' kaggle/deepmind_only_train.py
+          grep -q 'version != 2' .github/workflows/kaggle-train.yml
+          if grep -q 'holdout=\[synthetic(hold_rng' colab/train_v5_deepmind.py; then
+            echo 'Synthetic-only checkpoint holdout still present'
+            exit 61
+          fi
+          echo CANONICAL_STATIC_GATE_OK
+
+      - name: Android unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Verify no accidental GPU launch
+        run: |
+          set -euo pipefail
+          git diff -- .github/workflows/kaggle-train.yml | grep -q 'version != 2'
+          ! git diff --name-only | grep -q '^app/src/main/assets/default_model.mai5$'
+          echo NO_GPU_NO_MODEL_EMBED_GATE_OK
+
+      - name: Commit reviewed architecture migration
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt \
+            app/src/main/java/com/example/equationsolver/ai/StructuralMathEncoder.kt \
+            app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt \
+            app/src/test/java/com/example/equationsolver/ai/CanonicalNumericEncoderTest.kt \
+            app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt \
+            colab/train_v5_deepmind.py \
+            colab/turbo_train_v5.py \
+            kaggle/deepmind_only_train.py \
+            .github/workflows/kaggle-train.yml
+          git diff --cached --check
+          git commit -m 'Use canonical numeric algebra representation and curriculum'
+          git push origin HEAD:feat/v5-deepmind-colab

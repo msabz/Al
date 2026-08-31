@@ -1,0 +1,39 @@
+name: Diagnose v10 Intersection Distances
+
+on:
+  push:
+    branches:
+      - feat/v10-onion-sparse-intersection-test
+    paths:
+      - scripts/diagnose_v10_intersection_distances.py
+      - .github/workflows/diagnose-v10-intersection-distances.yml
+
+permissions:
+  contents: read
+
+jobs:
+  distance-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          set -euo pipefail
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: |
+          set -euo pipefail
+          python scripts/diagnose_v10_intersection_distances.py | tee /tmp/v10-distance.log
+          grep -q V10_DISTANCE_DIAGNOSTIC_PASS /tmp/v10-distance.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-intersection-distance-diagnostic
+          path: /tmp/v10-distance.log
+          retention-days: 30
