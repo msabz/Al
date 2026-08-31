@@ -43,16 +43,19 @@ jobs:
           repository: msabz/Al
           run-id: 33342388928
 
-      - name: Verify exact checkpoint and no GPU
+      - name: Verify exact checkpoint audit and no GPU
         run: |
           set -euo pipefail
           test -f run11/trained-output/math_ai_v5_best.mai5
+          test -f run11/trained-output/generalization_audit.json
           python - <<'PY'
-          import pathlib, struct, torch
+          import json, pathlib, struct, torch
           p = pathlib.Path('run11/trained-output/math_ai_v5_best.mai5')
           with p.open('rb') as f:
               magic, version = struct.unpack('>ii', f.read(8))
           assert magic == 0x4D414935 and version == 3, (hex(magic), version)
+          audit=json.load(open('run11/trained-output/generalization_audit.json'))
+          assert audit['schema']=='DEEPMIND_ONLY_PER_FAMILY_V2'
           assert not torch.cuda.is_available(), 'diagnostic must be CPU-only'
           print('RUN11_MAI5_V3_CPU_DIAGNOSTIC_CONTRACT_OK', p.stat().st_size)
           PY
@@ -65,6 +68,7 @@ jobs:
           python scripts/diagnose_run11_presence.py \
             --repo-root . \
             --checkpoint run11/trained-output/math_ai_v5_best.mai5 \
+            --run11-audit run11/trained-output/generalization_audit.json \
             --output diagnostic/run11_presence_calibration.json | tee diagnostic.log
 
       - name: Print compact diagnosis
@@ -73,14 +77,16 @@ jobs:
           import json
           d=json.load(open('diagnostic/run11_presence_calibration.json'))
           print('selected_threshold=', d['selected_threshold'])
-          for label,row in d['selected_threshold_on_frozen_audit'].items():
+          print('run11_gpu_reference_count_accuracy=', d['run11_gpu_reference_count_accuracy'])
+          print('cpu_minus_gpu_count_accuracy=', d['baseline_cpu_minus_run11_gpu_count_accuracy'])
+          for label,row in d['selected_threshold_on_frozen_audit_cpu'].items():
               print(label, 'count=', round(row['root_count_accuracy']*100,2),
                     'within1=', round(row['within_one_ratio']*100,2),
                     'rmse=', round(row['rmse'],4),
                     'missing=', row['missing_value_slots'], 'extra=', row['extra_value_slots'])
           print('threshold_only_can_pass_count_gate=', d['threshold_only_can_pass_count_gate'])
           print('oracle_threshold_can_pass_both_count_gates=', d['oracle_threshold_can_pass_both_count_gates'])
-          print('oracle=', json.dumps(d['oracle_best_on_frozen_audit_diagnostic_only'], indent=2))
+          print('oracle=', json.dumps(d['oracle_best_on_frozen_audit_cpu_diagnostic_only'], indent=2))
           PY
 
       - name: Upload CPU calibration evidence
