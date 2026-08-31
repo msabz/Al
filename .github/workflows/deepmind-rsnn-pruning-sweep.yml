@@ -1,0 +1,89 @@
+name: DeepMind RSNN Pruning Sweet-Spot Sweep
+
+on:
+  push:
+    branches:
+      - feat/rsnn-pruning-sweep
+    paths:
+      - scripts/pruned_snn_vs_mlp.py
+      - scripts/deepmind_pruned_snn_stress.py
+      - scripts/deepmind_rsnn_pruning_sweep.py
+      - .github/workflows/deepmind-rsnn-pruning-sweep.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rsnn-pruning-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static sweep contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/pruned_snn_vs_mlp.py scripts/deepmind_pruned_snn_stress.py scripts/deepmind_rsnn_pruning_sweep.py
+          grep -q 'SPARSITIES = (0.00, 0.10, 0.20, 0.30, 0.40, 0.50)' scripts/deepmind_rsnn_pruning_sweep.py
+          grep -q 'project synthetic data=0' scripts/deepmind_rsnn_pruning_sweep.py
+          echo 'PRUNING_SWEEP_STATIC_CONTRACT_PASS'
+
+      - name: Verify identical initialization and ratio isolation
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_rsnn_pruning_sweep.py --preflight | tee /tmp/pruning-sweep-preflight.log
+          grep -q 'PRUNING_SWEEP_PREFLIGHT_PASS ratios=0,10,20,30,40,50 identical_initialization=true' /tmp/pruning-sweep-preflight.log
+
+      - name: Run exact 5-seed DeepMind pruning sweep
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_rsnn_pruning_sweep.py \
+            --train-size 8192 \
+            --eval-size 2048 \
+            --ill-pool-size 4096 \
+            --ill-size 1024 \
+            --epochs 300 \
+            --batch-size 256 \
+            --seeds 11,22,33,44,55 \
+            --output-dir deepmind-rsnn-pruning-sweep-output | tee /tmp/pruning-sweep.log
+          grep -q 'SWEEP_PARAMETER_CONTRACT params_each=26880' /tmp/pruning-sweep.log
+          grep -q 'project synthetic data=0' /tmp/pruning-sweep.log
+          grep -q 'RSNN_PRUNING_SWEEP_DEEPMIND_COMPLETE' /tmp/pruning-sweep.log
+
+      - name: Print final sweep summary
+        if: always()
+        run: |
+          echo '===== RSNN PRUNING SWEEP SUMMARY ====='
+          cat deepmind-rsnn-pruning-sweep-output/SUMMARY.txt 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 180 /tmp/pruning-sweep.log 2>/dev/null || true
+
+      - name: Upload sweep evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepmind-rsnn-pruning-sweet-spot-evidence
+          path: |
+            deepmind-rsnn-pruning-sweep-output/**
+            /tmp/pruning-sweep-preflight.log
+            /tmp/pruning-sweep.log
+          if-no-files-found: warn
+          retention-days: 90
