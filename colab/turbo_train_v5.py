@@ -572,7 +572,7 @@ def stable_loss(out, roots, root_count, systems, states, families, numeric, othe
     else:
         root_loss = out.sum() * 0
 
-    cardinality_per = torch.zeros(len(out), device=device, dtype=out.dtype)
+    cardinality_per = torch.zeros(len(out), device=device, dtype=torch.float32)
     cardinality_used = torch.zeros(len(out), device=device, dtype=torch.bool)
     nonpoly = families != POLYNOMIAL
     if nonpoly.any():
