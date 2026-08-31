@@ -1,0 +1,93 @@
+name: Diagnose Run11 Polynomial Presence
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/diagnose-run11-presence.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  calibrate-presence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only diagnostic dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download exact Run11 evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v3-Kaggle-evidence
+          path: run11
+          github-token: ${{ github.token }}
+          repository: msabz/Al
+          run-id: 33342388928
+
+      - name: Verify exact checkpoint and no GPU
+        run: |
+          set -euo pipefail
+          test -f run11/trained-output/math_ai_v5_best.mai5
+          python - <<'PY'
+          import pathlib, struct, torch
+          p = pathlib.Path('run11/trained-output/math_ai_v5_best.mai5')
+          with p.open('rb') as f:
+              magic, version = struct.unpack('>ii', f.read(8))
+          assert magic == 0x4D414935 and version == 3, (hex(magic), version)
+          assert not torch.cuda.is_available(), 'diagnostic must be CPU-only'
+          print('RUN11_MAI5_V3_CPU_DIAGNOSTIC_CONTRACT_OK', p.stat().st_size)
+          PY
+
+      - name: Calibrate polynomial presence threshold on official DeepMind only
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -euo pipefail
+          python scripts/diagnose_run11_presence.py \
+            --repo-root . \
+            --checkpoint run11/trained-output/math_ai_v5_best.mai5 \
+            --output diagnostic/run11_presence_calibration.json | tee diagnostic.log
+
+      - name: Print compact diagnosis
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('diagnostic/run11_presence_calibration.json'))
+          print('selected_threshold=', d['selected_threshold'])
+          for label,row in d['selected_threshold_on_frozen_audit'].items():
+              print(label, 'count=', round(row['root_count_accuracy']*100,2),
+                    'within1=', round(row['within_one_ratio']*100,2),
+                    'rmse=', round(row['rmse'],4),
+                    'missing=', row['missing_value_slots'], 'extra=', row['extra_value_slots'])
+          print('threshold_only_can_pass_count_gate=', d['threshold_only_can_pass_count_gate'])
+          print('oracle_threshold_can_pass_both_count_gates=', d['oracle_threshold_can_pass_both_count_gates'])
+          print('oracle=', json.dumps(d['oracle_best_on_frozen_audit_diagnostic_only'], indent=2))
+          PY
+
+      - name: Upload CPU calibration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: Run11-Polynomial-Presence-Calibration
+          path: |
+            diagnostic/run11_presence_calibration.json
+            diagnostic.log
+          retention-days: 90
