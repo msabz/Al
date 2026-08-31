@@ -1,0 +1,94 @@
+name: Validate Pruned RSNN vs Ordinary MLP
+
+on:
+  push:
+    branches:
+      - feat/pruned-snn-vs-mlp
+    paths:
+      - scripts/pruned_snn_vs_mlp.py
+      - .github/workflows/validate-pruned-snn-vs-mlp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruned-rsnn-vs-ordinary-mlp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU PyTorch stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static architecture contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/pruned_snn_vs_mlp.py
+          grep -q 'HIDDEN_DIM = 160' scripts/pruned_snn_vs_mlp.py
+          grep -q 'TIME_STEPS = 25' scripts/pruned_snn_vs_mlp.py
+          grep -q 'DECAY = 0.88' scripts/pruned_snn_vs_mlp.py
+          grep -q 'THRESHOLD = 1.0' scripts/pruned_snn_vs_mlp.py
+          grep -q 'SURROGATE_ALPHA = 2.0' scripts/pruned_snn_vs_mlp.py
+          grep -q 'FINAL_SPARSITY = 0.30' scripts/pruned_snn_vs_mlp.py
+          grep -q 'PRUNE_START = 50' scripts/pruned_snn_vs_mlp.py
+          grep -q 'PRUNE_END = 150' scripts/pruned_snn_vs_mlp.py
+          grep -q 'PRUNE_EVERY = 10' scripts/pruned_snn_vs_mlp.py
+          grep -q 'nn.SmoothL1Loss(beta=1.0)' scripts/pruned_snn_vs_mlp.py
+          grep -q 'torch.optim.AdamW' scripts/pruned_snn_vs_mlp.py
+          grep -q 'CosineAnnealingLR' scripts/pruned_snn_vs_mlp.py
+          echo 'STATIC_SNN_CONTRACT_PASS'
+
+      - name: Surrogate pruning and freeze smoke test
+        run: |
+          set -euo pipefail
+          python scripts/pruned_snn_vs_mlp.py --smoke --output-dir snn-smoke-output | tee /tmp/snn-smoke.log
+          grep -q 'SNN_INVARIANT_CHECKS_PASS' /tmp/snn-smoke.log
+          grep -q 'PARAMETER_MATCH SNN=26880 MLP=26880' /tmp/snn-smoke.log
+          grep -q 'BENCHMARK_COMPLETE' /tmp/snn-smoke.log
+
+      - name: Run full 300 epoch CPU comparison
+        run: |
+          set -euo pipefail
+          python scripts/pruned_snn_vs_mlp.py \
+            --epochs 300 \
+            --train-size 2048 \
+            --valid-size 512 \
+            --batch-size 256 \
+            --seed 2026 \
+            --output-dir snn-benchmark-output | tee /tmp/pruned-snn-vs-mlp.log
+          grep -q 'BENCHMARK_COMPLETE' /tmp/pruned-snn-vs-mlp.log
+          grep -q 'target=0.3000' /tmp/pruned-snn-vs-mlp.log
+
+      - name: Print final comparison
+        if: always()
+        run: |
+          echo '===== SUMMARY ====='
+          cat snn-benchmark-output/SUMMARY.txt 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 80 /tmp/pruned-snn-vs-mlp.log 2>/dev/null || true
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruned-rsnn-vs-ordinary-mlp-cpu-evidence
+          path: |
+            snn-benchmark-output/**
+            snn-smoke-output/**
+            /tmp/pruned-snn-vs-mlp.log
+            /tmp/snn-smoke.log
+          if-no-files-found: warn
+          retention-days: 90
