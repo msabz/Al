@@ -30,8 +30,18 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/apply_v4_cardinality_head.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt')
+          s=p.read_text()
+          old='''    @Test fun v3SemanticContractIsActive() {\n        assertEquals(3, V5ModelSpec.FILE_VERSION)\n'''
+          new='''    @Test fun v4SemanticContractIsActive() {\n        assertEquals(4, V5ModelSpec.FILE_VERSION)\n'''
+          assert s.count(old)==1, 'stale v3 semantic test anchor changed'
+          p.write_text(s.replace(old,new,1))
+          PY
           git diff --check
           grep -q 'const val FILE_VERSION = 4' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'assertEquals(4, V5ModelSpec.FILE_VERSION)' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
           grep -q 'MAGIC=0x4D414935; VERSION=4' colab/train_v5_deepmind.py
           grep -q 'root-count logits' app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt
           grep -q 'def polynomial_active_indices' colab/train_v5_deepmind.py
@@ -90,6 +100,7 @@ jobs:
           git add \
             app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt \
             app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt \
+            app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt \
             colab/train_v5_deepmind.py \
             colab/turbo_train_v5.py \
             colab/generalization_audit.py
