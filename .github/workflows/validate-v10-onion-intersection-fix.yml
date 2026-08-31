@@ -1,0 +1,83 @@
+name: Validate v10 Onion Intersection Fix
+
+on:
+  push:
+    branches:
+      - feat/v9-onion-corrected-test
+    paths:
+      - scripts/cpu_v10_onion_intersection_fix.py
+      - .github/workflows/validate-v10-onion-intersection-fix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-v10-onion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static corrected-contract check
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v9_onion_corrected_deepmind.py
+          python -m py_compile scripts/cpu_v10_onion_intersection_fix.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v10_onion_intersection_fix.py').read_text()
+          required=(
+              'MEET_RADIUS',
+              'MEET_TEMPERATURE',
+              'class CorrectedOnionNetV10',
+              'def _routing_points',
+              'pair * (1.0 + TRIADIC_BOOST * support)',
+              'def update_stability',
+              'V10_ONION_SEMANTIC_PREFLIGHT_PASS',
+              'V10_ONION_INTERSECTION_FIX_COMPLETE',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'missing V10 markers: {missing}')
+          if 'gate_logits' in s:
+              raise SystemExit('trainable branch gates are forbidden')
+          low=s.lower()
+          for marker in ('synthetic_pool', 'cuda'):
+              if marker in low:
+                  raise SystemExit(f'forbidden implementation marker: {marker}')
+          print('V10_STATIC_CONTRACT_PASS')
+          PY
+
+      - name: Run parameter-matched corrected DeepMind comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v10_onion_intersection_fix.py | tee /tmp/v10-onion.log
+          grep -q 'V10_ONION_SEMANTIC_PREFLIGHT_PASS' /tmp/v10-onion.log
+          grep -q 'V10_ONION_INTERSECTION_FIX_COMPLETE' /tmp/v10-onion.log
+          grep -Eq 'V9_CORRECTED_ONION_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' /tmp/v10-onion.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-onion-intersection-fix-evidence
+          path: /tmp/v10-onion.log
+          if-no-files-found: warn
+          retention-days: 30
