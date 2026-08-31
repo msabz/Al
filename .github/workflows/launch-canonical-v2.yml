@@ -1,0 +1,43 @@
+name: Launch Canonical DeepMind-only v2
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/launch-canonical-v2.yml"]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  preflight-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+
+      - name: Final release preflight
+        run: |
+          set -euo pipefail
+          python -m py_compile colab/train_v5_deepmind.py colab/turbo_train_v5.py kaggle/deepmind_only_train.py kaggle/kaggle_train.py
+          grep -q 'const val FILE_VERSION = 2' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val SHARED_1 = 96' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val SHARED_2 = 64' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'const val HEAD_HIDDEN = 48' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'core.DEEPMIND_RATIO = 1.0' kaggle/deepmind_only_train.py
+          grep -q 'core.SYNTHETIC_POOL_SIZE = 0' kaggle/deepmind_only_train.py
+          grep -q 'core.CONSISTENCY_WEIGHT = 0.0' kaggle/deepmind_only_train.py
+          grep -q 'canonical numeric coefficients for linear/poly/system' kaggle/deepmind_only_train.py
+          grep -q 'curriculum: easy -> easy+medium -> easy+medium+hard' kaggle/deepmind_only_train.py
+          grep -q 'version != 2' .github/workflows/kaggle-train.yml
+          echo CANONICAL_V2_RELEASE_PREFLIGHT_OK
+
+      - name: Dispatch exactly one Kaggle run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run kaggle-train.yml --ref feat/v5-deepmind-colab
+          echo CANONICAL_V2_KAGGLE_DISPATCHED

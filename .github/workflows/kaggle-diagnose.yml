@@ -1,0 +1,35 @@
+name: Kaggle Diagnose v5
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/kaggle-diagnose.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Pull only diagnostic files
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p diag
+          kaggle kernels output musabalzoubi/math-ai-v5-turbo-trainer -p diag -o --page-size 200 --file-pattern '.*(kaggle_job_status\.json|training_console\.log|math-ai-v5-turbo-trainer\.log)$' || true
+          echo '=== STATUS ==='
+          find diag -type f -name 'kaggle_job_status.json' -print -exec cat {} \; || true
+          echo '=== TRAINING CONSOLE TAIL ==='
+          f="$(find diag -type f -name 'training_console.log' -print -quit)"
+          if [ -n "$f" ]; then tail -n 120 "$f"; fi
+          echo '=== KERNEL LOG TAIL ==='
+          f="$(find diag -type f -name 'math-ai-v5-turbo-trainer.log' -print -quit)"
+          if [ -n "$f" ]; then tail -n 160 "$f"; fi

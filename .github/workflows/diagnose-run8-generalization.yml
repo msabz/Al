@@ -1,0 +1,87 @@
+name: Diagnose Run 8 Generalization
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths:
+      - "scripts/diagnose_run8_generalization.py"
+      - ".github/workflows/diagnose-run8-generalization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU diagnostic dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install -q --upgrade pip
+          python -m pip install -q numpy sympy absl-py six
+          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          python - <<'PY'
+          import numpy, sympy, torch
+          assert not torch.cuda.is_available()
+          print('CPU_DIAG_DEPS_OK', numpy.__version__, sympy.__version__, torch.__version__)
+          PY
+
+      - name: Download exact Run 8 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: MathAI-v5-Kaggle-evidence
+          path: run8
+          repository: msabz/Al
+          run-id: 33332042190
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Locate checkpoint
+        id: model
+        shell: bash
+        run: |
+          set -euo pipefail
+          p="$(find run8 -type f -name math_ai_v5_best.mai5 -print -quit)"
+          test -n "$p"
+          echo "path=$p" >> "$GITHUB_OUTPUT"
+          echo "Checkpoint: $p"
+
+      - name: Diagnose official DeepMind banks on CPU
+        run: |
+          set -euo pipefail
+          python scripts/diagnose_run8_generalization.py \
+            --root . \
+            --model '${{ steps.model.outputs.path }}' \
+            --output run8_diagnostic.json
+
+      - name: Print compact diagnosis
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('run8_diagnostic.json'))
+          for name,row in d['banks'].items():
+              t=row['trained']; g=row['gains']; b=row['random_baseline']['median']
+              print(f"{name}: trained RMSE={t['rmse']:.4f} MAE={t['mae']:.4f} ±1={100*t['within_one_ratio']:.2f}% missing={t['missing_value_slots']}")
+              print(f"  median-random RMSE={b['rmse']:.4f} MAE={b['mae']:.4f} | RMSE gain={100*g['rmse_gain']:.2f}% MAE gain={100*g['mae_gain']:.2f}%")
+              for w in t.get('worst',[])[:3]:
+                  print('  worst', w['max_abs_error'], w['equation'], 'expected=',w['expected'],'pred=',w['predicted'])
+          PY
+
+      - name: Upload diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: Run8-CPU-Generalization-Diagnostic
+          path: run8_diagnostic.json
+          retention-days: 30

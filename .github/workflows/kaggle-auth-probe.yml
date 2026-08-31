@@ -1,0 +1,70 @@
+name: Kaggle Auth Probe
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths:
+      - ".github/workflows/kaggle-auth-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+
+      - name: Verify token and discover Kaggle owner
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KAGGLE_API_TOKEN:-}" ]; then
+            echo "KAGGLE_SECRET_MISSING"
+            exit 20
+          fi
+          python - <<'PY'
+          import os
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi()
+          api.authenticate()
+          print('KAGGLE_AUTH_OK')
+          values = getattr(api, 'config_values', {}) or {}
+          username = values.get('username') or ''
+          if username:
+              print('KAGGLE_OWNER_FROM_API=' + username)
+          else:
+              print('KAGGLE_OWNER_FROM_API=')
+          PY
+
+          # Try owned resources as a second identity source without exposing credentials.
+          kaggle kernels list -m -v --page-size 200 > /tmp/kernels.csv || true
+          kaggle datasets list -m -v --page-size 200 > /tmp/datasets.csv || true
+
+          python - <<'PY'
+          import csv, pathlib, re
+          owners = []
+          for p in ['/tmp/kernels.csv','/tmp/datasets.csv']:
+              path = pathlib.Path(p)
+              if not path.exists():
+                  continue
+              text = path.read_text(errors='ignore')
+              for token in re.findall(r'(?m)(?:^|,)([A-Za-z0-9_-]+)/[A-Za-z0-9_.-]+', text):
+                  owners.append(token)
+          owner = owners[0] if owners else ''
+          print('KAGGLE_OWNER_FROM_RESOURCES=' + owner)
+          pathlib.Path('/tmp/kaggle-owner.txt').write_text(owner)
+          PY
+
+      - name: Probe summary
+        if: always()
+        run: |
+          echo "Kaggle token probe finished. Check KAGGLE_AUTH_OK and owner discovery above."
