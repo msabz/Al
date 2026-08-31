@@ -62,6 +62,24 @@ EXPECTED_BANKS = {
 }
 
 
+def enforce_deterministic_audit(audit_path):
+    """Make each official DeepMind audit bank independent of prior RNG consumption."""
+    text = audit_path.read_text()
+    marker = "DEEPMIND_BANK_GLOBAL_RESEED"
+    if marker in text:
+        return
+    anchor = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        if spec["split"] == "interpolate":\n'''
+    replacement = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        # DEEPMIND_BANK_GLOBAL_RESEED: official generator modules also consume\n        # process-global RNG state; fully reseed per bank for reproducibility.\n        bank_seed = int(spec["seed"])\n        random.seed(bank_seed)\n        ns["np"].random.seed(bank_seed & 0xFFFFFFFF)\n        ns["torch"].manual_seed(bank_seed)\n        if spec["split"] == "interpolate":\n'''
+    if text.count(anchor) != 1:
+        raise RuntimeError("v4 deterministic-audit insertion anchor changed")
+    text = text.replace(anchor, replacement, 1)
+    old_rng = '        rng = random.Random(int(spec["seed"]))'
+    if text.count(old_rng) != 1:
+        raise RuntimeError("v4 deterministic-audit RNG anchor changed")
+    text = text.replace(old_rng, '        rng = random.Random(bank_seed)', 1)
+    audit_path.write_text(text)
+
+
 def prepare_source_v4(log_fh):
     actual = original_prepare_source(log_fh)
 
@@ -78,6 +96,7 @@ def prepare_source_v4(log_fh):
         raise RuntimeError(f"v4 trainer contract missing markers: {missing}")
 
     audit_path = core.ROOT / "colab/generalization_audit.py"
+    enforce_deterministic_audit(audit_path)
     audit_text = audit_path.read_text()
     required_audit = (
         'AUDIT_SCHEMA = "DEEPMIND_ONLY_PER_FAMILY_V2"',
