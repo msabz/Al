@@ -1,0 +1,87 @@
+name: Validate v9 Corrected Onion on DeepMind
+
+on:
+  push:
+    branches:
+      - feat/v9-onion-corrected-test
+    paths:
+      - scripts/cpu_v9_onion_corrected_deepmind.py
+      - .github/workflows/validate-v9-onion-corrected.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-corrected-onion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static experiment contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v9_onion_corrected_deepmind.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v9_onion_corrected_deepmind.py').read_text()
+          required=(
+              'OFFICIAL_DATA_CONTRACT',
+              'BRANCHES = 6',
+              'DEPTH = 3',
+              'class ManifoldLinear',
+              'class CorrectedOnionNet',
+              'TRIADIC_BOOST',
+              'dynamic_plasticity',
+              'adaptive_quiet',
+              'adaptive_unquiet',
+              'intersection_only_routes',
+              'layer_only_reward',
+              'SEEDS = (11, 22, 33)',
+              'STEPS = 5000',
+              'V9_CORRECTED_ONION_DEEPMIND_',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'missing corrected-onion markers: {missing}')
+          low=s.lower()
+          forbidden=('synthetic_pool', 'cuda')
+          found=[x for x in forbidden if x in low]
+          if found:
+              raise SystemExit(f'forbidden implementation marker: {found}')
+          if 'gate_logits' in s:
+              raise SystemExit('trainable branch gates are forbidden in corrected onion')
+          print('V9_CORRECTED_ONION_STATIC_CONTRACT_PASS')
+          PY
+
+      - name: Run parameter-matched DeepMind corrected-onion comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v9_onion_corrected_deepmind.py | tee /tmp/v9-corrected-onion.log
+          grep -Eq 'V9_CORRECTED_ONION_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' /tmp/v9-corrected-onion.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v9-corrected-onion-deepmind-cpu-evidence
+          path: /tmp/v9-corrected-onion.log
+          if-no-files-found: warn
+          retention-days: 30
