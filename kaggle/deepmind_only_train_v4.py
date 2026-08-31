@@ -63,20 +63,29 @@ EXPECTED_BANKS = {
 
 
 def enforce_deterministic_audit(audit_path):
-    """Make each official DeepMind audit bank independent of prior RNG consumption."""
+    """Make official DeepMind audit banks reproducible and runtime paths portable."""
     text = audit_path.read_text()
+
     marker = "DEEPMIND_BANK_GLOBAL_RESEED"
-    if marker in text:
-        return
-    anchor = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        if spec["split"] == "interpolate":\n'''
-    replacement = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        # DEEPMIND_BANK_GLOBAL_RESEED: official generator modules also consume\n        # process-global RNG state; fully reseed per bank for reproducibility.\n        bank_seed = int(spec["seed"])\n        random.seed(bank_seed)\n        ns["np"].random.seed(bank_seed & 0xFFFFFFFF)\n        ns["torch"].manual_seed(bank_seed)\n        if spec["split"] == "interpolate":\n'''
-    if text.count(anchor) != 1:
-        raise RuntimeError("v4 deterministic-audit insertion anchor changed")
-    text = text.replace(anchor, replacement, 1)
-    old_rng = '        rng = random.Random(int(spec["seed"]))'
-    if text.count(old_rng) != 1:
-        raise RuntimeError("v4 deterministic-audit RNG anchor changed")
-    text = text.replace(old_rng, '        rng = random.Random(bank_seed)', 1)
+    if marker not in text:
+        anchor = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        if spec["split"] == "interpolate":\n'''
+        replacement = '''    try:\n        ns["synthetic"] = project_synthetic_forbidden\n        # DEEPMIND_BANK_GLOBAL_RESEED: official generator modules also consume\n        # process-global RNG state; fully reseed per bank for reproducibility.\n        bank_seed = int(spec["seed"])\n        random.seed(bank_seed)\n        ns["np"].random.seed(bank_seed & 0xFFFFFFFF)\n        ns["torch"].manual_seed(bank_seed)\n        if spec["split"] == "interpolate":\n'''
+        if text.count(anchor) != 1:
+            raise RuntimeError("v4 deterministic-audit insertion anchor changed")
+        text = text.replace(anchor, replacement, 1)
+        old_rng = '        rng = random.Random(int(spec["seed"]))'
+        if text.count(old_rng) != 1:
+            raise RuntimeError("v4 deterministic-audit RNG anchor changed")
+        text = text.replace(old_rng, '        rng = random.Random(bank_seed)', 1)
+
+    portable_marker = "DEEPMIND_AUDIT_RUNTIME_PORTABLE"
+    if portable_marker not in text:
+        old_portable = '    src = src.replace("/content", runtime_dir.as_posix())'
+        new_portable = '''    # DEEPMIND_AUDIT_RUNTIME_PORTABLE: the reviewed Kaggle adapter may rewrite\n    # trainer /content paths to /kaggle/working; redirect either spelling into\n    # this audit's writable runtime directory before executing trainer imports.\n    src = src.replace("/content", runtime_dir.as_posix()).replace("/kaggle/working", runtime_dir.as_posix())'''
+        if text.count(old_portable) != 1:
+            raise RuntimeError("v4 audit runtime portability anchor changed")
+        text = text.replace(old_portable, new_portable, 1)
+
     audit_path.write_text(text)
 
 
@@ -107,6 +116,7 @@ def prepare_source_v4(log_fh):
         '"extrapolate_polynomial"',
         'root_count_probs',
         'DEEPMIND_BANK_GLOBAL_RESEED',
+        'DEEPMIND_AUDIT_RUNTIME_PORTABLE',
     )
     missing = [marker for marker in required_audit if marker not in audit_text]
     if missing:
@@ -114,6 +124,7 @@ def prepare_source_v4(log_fh):
 
     print("[V4] Polynomial contract: 5-way cardinality CE + residual-ranked top-k", flush=True)
     print("[V4] Audit contract: deterministic official DeepMind per-family banks", flush=True)
+    print("[V4] Audit runtime: portable across Kaggle/GitHub paths", flush=True)
     print("[V4] Project synthetic training/audit examples: 0", flush=True)
     return actual
 
