@@ -46,9 +46,10 @@ jobs:
               'class OrdinaryMLP',
               'class ManifoldLattice3D',
               'SIDE = 3',
-              'x^2+y^2+z^2=1',
-              'x^2+y^2=1',
-              'z=x*y',
+              'torch.cos(theta)*cp',
+              'torch.stack((torch.cos(theta), torch.sin(theta), torch.tanh(phi))',
+              'u*v',
+              'torch.sin(math.pi*u)',
               'SEEDS = (11, 22, 33)',
               'STEPS = 5000',
               'V6_MANIFOLD_LATTICE_DEEPMIND_',
@@ -56,8 +57,9 @@ jobs:
           missing=[x for x in required if x not in s]
           if missing:
               raise SystemExit(f'missing manifold experiment markers: {missing}')
-          forbidden=('SYNTHETIC_POOL', 'project synthetic', 'cuda')
-          found=[x for x in forbidden if x in s.lower()]
+          low=s.lower()
+          forbidden=('synthetic_pool', 'project synthetic', 'cuda')
+          found=[x for x in forbidden if x in low]
           if found:
               raise SystemExit(f'forbidden marker in CPU DeepMind experiment: {found}')
           print('V6_MANIFOLD_STATIC_CONTRACT_PASS')
