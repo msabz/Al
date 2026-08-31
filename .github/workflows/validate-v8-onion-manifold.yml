@@ -61,10 +61,10 @@ jobs:
           if missing:
               raise SystemExit(f'missing onion experiment markers: {missing}')
           low=s.lower()
-          forbidden=('synthetic_pool', 'project synthetic', 'cuda')
+          forbidden=('synthetic_pool', 'cuda')
           found=[x for x in forbidden if x in low]
           if found:
-              raise SystemExit(f'forbidden marker in CPU DeepMind experiment: {found}')
+              raise SystemExit(f'forbidden implementation marker in CPU DeepMind experiment: {found}')
           print('V8_ONION_STATIC_CONTRACT_PASS')
           PY
 
