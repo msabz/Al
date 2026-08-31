@@ -1,0 +1,74 @@
+name: Validate v5 Set-Root Query Architecture
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - scripts/cpu_v5_setroot_query_preflight.py
+      - .github/workflows/validate-v5-setroot-query.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-cpu-generalization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact feature source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static source contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v5_setroot_query_preflight.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v5_setroot_query_preflight.py').read_text()
+          required=(
+              'google-deepmind/mathematics_dataset.git',
+              'roots_with_multiplicity',
+              'class RootQueryNet',
+              'self.root_queries',
+              'torch.matmul(q, k.transpose(1, 2))',
+              'unique_start_target',
+              'V5_SETROOT_QUERY_GENERALIZATION_PASS',
+          )
+          missing=[x for x in required if x not in s]
+          if missing: raise SystemExit(f'missing set-root preflight markers: {missing}')
+          forbidden=('synthetic(', 'SYNTHETIC_POOL', 'project synthetic')
+          found=[x for x in forbidden if x in s]
+          if found: raise SystemExit(f'project-synthetic marker forbidden in preflight: {found}')
+          print('V5_SETROOT_STATIC_CONTRACT_PASS')
+          PY
+
+      - name: Run disjoint official DeepMind CPU generalization gate
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v5_setroot_query_preflight.py | tee /tmp/v5-setroot-query.log
+          grep -q 'V5_SETROOT_QUERY_GENERALIZATION_PASS' /tmp/v5-setroot-query.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-setroot-query-cpu-evidence
+          path: /tmp/v5-setroot-query.log
+          if-no-files-found: warn
+          retention-days: 30

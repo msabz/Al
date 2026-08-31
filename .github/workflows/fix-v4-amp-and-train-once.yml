@@ -1,0 +1,308 @@
+name: Fix MAI5 v4 AMP dtype and train once
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/fix-v4-amp-and-train-once.yml
+
+concurrency:
+  group: math-ai-v5-v4-amp-fix-once
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  patch-preflight-train-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply the single AMP dtype fix
+        id: patch
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('colab/turbo_train_v5.py')
+          s=p.read_text()
+          old='cardinality_per = torch.zeros(len(out), device=device, dtype=out.dtype)'
+          new='cardinality_per = torch.zeros(len(out), device=device, dtype=torch.float32)'
+          if s.count(old) != 1:
+              raise SystemExit(f'Expected exactly one old AMP cardinality accumulator, found {s.count(old)}')
+          if new in s:
+              raise SystemExit('FP32 cardinality accumulator already present unexpectedly')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          print('AMP_CARDINALITY_FP32_PATCH_APPLIED')
+          PY
+          python -m py_compile colab/turbo_train_v5.py
+          git diff --check
+          git diff -- colab/turbo_train_v5.py
+
+      - name: Install CPU preflight dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip kaggle
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Prove mixed-dtype cardinality accumulator contract on CPU
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import torch
+          # Reproduce the exact failure mode structurally: model output is low precision,
+          # AMP-safe BCE/CE results are FP32, and indexed writes must target FP32.
+          out=torch.randn(8,14,dtype=torch.float16)
+          cardinality_per=torch.zeros(len(out),dtype=torch.float32)
+          nonpoly=torch.tensor([True,True,False,False,True,False,True,False])
+          poly=torch.where(~nonpoly)[0]
+          per_card=torch.rand(int(nonpoly.sum()),dtype=torch.float32)
+          per_count=torch.rand(len(poly),dtype=torch.float32)
+          cardinality_per[nonpoly]=per_card
+          cardinality_per[poly]=per_count
+          assert out.dtype == torch.float16
+          assert cardinality_per.dtype == torch.float32
+          assert torch.isfinite(cardinality_per).all()
+          print('AMP_CARDINALITY_MIXED_DTYPE_CPU_CONTRACT_PASS')
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('colab/turbo_train_v5.py').read_text()
+          assert 'cardinality_per = torch.zeros(len(out), device=device, dtype=torch.float32)' in s
+          assert 'cardinality_per = torch.zeros(len(out), device=device, dtype=out.dtype)' not in s
+          print('AMP_CARDINALITY_SOURCE_CONTRACT_PASS')
+          PY
+
+      - name: Commit only the tested Turbo dtype fix
+        id: commit
+        run: |
+          set -euo pipefail
+          git status --short
+          git config user.name 'msabz'
+          git config user.email '36938563+msabz@users.noreply.github.com'
+          git add colab/turbo_train_v5.py
+          test "$(git diff --cached --name-only)" = 'colab/turbo_train_v5.py'
+          git commit -m 'Fix MAI5 v4 AMP cardinality accumulator dtype'
+          git push origin HEAD:feat/v5-deepmind-colab
+          sha="$(git rev-parse HEAD)"
+          echo "source_sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Committed tested fix at ${sha}"
+
+      - name: Exact generated-worker preflight at committed SHA
+        env:
+          SOURCE_SHA: ${{ steps.commit.outputs.source_sha }}
+          MATHAI_WORK_DIR: /tmp/mathai-v4-amp-exact-preflight
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, py_compile, re, shutil
+          sha=os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}',sha),sha
+          work=pathlib.Path(os.environ['MATHAI_WORK_DIR'])
+          shutil.rmtree(work,ignore_errors=True); work.mkdir(parents=True)
+          wrapper=pathlib.Path('kaggle/deepmind_only_train_v4.py')
+          text=wrapper.read_text()
+          marker='\n\ntry:\n    core.main()\n    validate_release_outputs()\nfinally:\n    cleanup_large_temporaries()'
+          assert marker in text
+          prefix=text.replace(marker,'\n',1)
+          ns={'__name__':'v4_amp_exact_preflight','__file__':str(wrapper),'SOURCE_COMMIT':sha}
+          exec(compile(prefix,str(wrapper),'exec'),ns)
+          core=ns['core']
+          with (work/'preflight.log').open('w') as fh:
+              actual=core.prepare_source(fh)
+          assert actual==sha,(actual,sha)
+          worker=pathlib.Path(core.prepare_turbo_worker())
+          py_compile.compile(str(worker),doraise=True)
+          src=worker.read_text()
+          required=(
+              'cardinality_per = torch.zeros(len(out), device=device, dtype=torch.float32)',
+              'count_target = root_count[poly_ids].clamp(1, ROOT_SLOTS) - 1',
+              'nonpoly_match = (families[ids] != POLYNOMIAL)',
+              'SYNTHETIC_POOL_SIZE = 0',
+              'DEEPMIND_RATIO = 1.0',
+          )
+          missing=[m for m in required if m not in src]
+          if missing: raise SystemExit(f'Exact worker missing required contracts: {missing}')
+          assert 'cardinality_per = torch.zeros(len(out), device=device, dtype=out.dtype)' not in src
+          print('MAI5_V4_AMP_EXACT_WORKER_PREFLIGHT_PASS source=',sha)
+          PY
+
+      - name: Authenticate Kaggle
+        id: kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}" || { echo 'KAGGLE_API_TOKEN is missing'; exit 20; }
+          python - <<'PY'
+          import os
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api=KaggleApi(); api.authenticate()
+          owner=(getattr(api,'config_values',{}) or {}).get('username') or ''
+          if not owner: raise SystemExit('Kaggle username unavailable')
+          ref=owner+'/math-ai-v5-mai5-v4-trainer'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write('owner='+owner+'\n'); fh.write('kernel_ref='+ref+'\n')
+          print('KAGGLE_AUTH_OK',ref)
+          PY
+
+      - name: Prepare exact private T4 kernel
+        env:
+          KAGGLE_OWNER: ${{ steps.kaggle.outputs.owner }}
+          SOURCE_SHA: ${{ steps.commit.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          rm -rf .kaggle-job
+          mkdir -p .kaggle-job
+          python - <<'PY'
+          import os, pathlib, re
+          sha=os.environ['SOURCE_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('bad source sha')
+          code=f'''#!/usr/bin/env python3
+          import pathlib, re, urllib.request
+          SOURCE_COMMIT = "{sha}"
+          if not re.fullmatch(r"[0-9a-fA-F]{{40}}", SOURCE_COMMIT):
+              raise RuntimeError(f"SOURCE_COMMIT invalid: {{SOURCE_COMMIT!r}}")
+          url=f"https://raw.githubusercontent.com/msabz/Al/{{SOURCE_COMMIT}}/kaggle/deepmind_only_train_v4.py"
+          target=pathlib.Path("/kaggle/working/_deepmind_only_train_v4.py")
+          urllib.request.urlretrieve(url,target)
+          text=target.read_text()
+          exec(compile(text,str(target),"exec"),{{"__name__":"__main__","__file__":str(target),"SOURCE_COMMIT":SOURCE_COMMIT}})
+          '''
+          lines=[line[10:] if line.startswith('          ') else line for line in code.splitlines()]
+          pathlib.Path('.kaggle-job/math_ai_v5_kaggle.py').write_text('\n'.join(lines)+'\n')
+          PY
+          python -m py_compile .kaggle-job/math_ai_v5_kaggle.py
+          cat > .kaggle-job/kernel-metadata.json <<JSON
+          {
+            "id": "${KAGGLE_OWNER}/math-ai-v5-mai5-v4-trainer",
+            "title": "Math AI v5 MAI5-v4 Trainer",
+            "code_file": "math_ai_v5_kaggle.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_internet": true,
+            "machine_shape": "NvidiaTeslaT4",
+            "dataset_sources": [],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          JSON
+          python - <<'PY'
+          import json, os, re
+          m=json.load(open('.kaggle-job/kernel-metadata.json'))
+          expected=os.environ['KAGGLE_OWNER']+'/math-ai-v5-mai5-v4-trainer'
+          assert m['id']==expected
+          assert re.sub(r'[^a-z0-9]+','-',m['title'].lower()).strip('-')=='math-ai-v5-mai5-v4-trainer'
+          print('KAGGLE_V4_ID_TITLE_CONTRACT_OK',expected)
+          PY
+
+      - name: Launch exactly one Kaggle T4 run
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p .kaggle-job --accelerator NvidiaTeslaT4 --timeout 18000 | tee /tmp/kaggle-push.log
+
+      - name: Monitor Kaggle GPU job
+        id: monitor
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          set -euo pipefail
+          outcome=timeout
+          for i in $(seq 1 120); do
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1 || true)"
+            echo "[$(date -u +%H:%M:%S)] ${status}"
+            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then outcome=complete; break; fi
+            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then outcome=failed; break; fi
+            sleep 60
+          done
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          test "${outcome}" = complete || { echo "Kaggle kernel outcome=${outcome}"; exit 30; }
+
+      - name: Download Kaggle outputs and diagnostics
+        if: always()
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          mkdir -p kaggle-output kaggle-pull
+          if [ -n "${KERNEL_REF:-}" ]; then
+            kaggle kernels output "${KERNEL_REF}" -p kaggle-output -o --page-size 200 || true
+            kaggle kernels pull "${KERNEL_REF}" -p kaggle-pull -m || true
+          fi
+          find kaggle-output kaggle-pull -maxdepth 3 -type f -printf '%p %k KB\n' | sort || true
+
+      - name: Normalize and inspect MAI5-v4 result
+        id: result
+        if: steps.monitor.outputs.outcome == 'complete'
+        env:
+          SOURCE_SHA: ${{ steps.commit.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p trained-output
+          for name in math_ai_v5_best.mai5 generalization_audit.json training_report.json LEARNING_EVIDENCE.txt v5_interop_expected.tsv kaggle_job_status.json; do
+            src="$(find kaggle-output -type f -name "$name" -print -quit)"
+            test -n "$src" || { echo "Missing Kaggle output: $name"; exit 40; }
+            cp "$src" "trained-output/$name"
+          done
+          src="$(find kaggle-output -type f -name training_console.log -print -quit)" || true
+          test -z "$src" || cp "$src" trained-output/training_console.log
+          python - <<'PY'
+          import json, os, pathlib, struct
+          model=pathlib.Path('trained-output/math_ai_v5_best.mai5')
+          with model.open('rb') as fh: magic,version=struct.unpack('>ii',fh.read(8))
+          if magic!=0x4D414935 or version!=4: raise SystemExit(f'Bad MAI5-v4 header: {magic:#x}/{version}')
+          audit=json.loads(pathlib.Path('trained-output/generalization_audit.json').read_text())
+          report=json.loads(pathlib.Path('trained-output/training_report.json').read_text())
+          status=json.loads(pathlib.Path('trained-output/kaggle_job_status.json').read_text())
+          if report.get('source_commit')!=os.environ['SOURCE_SHA']: raise SystemExit('source commit mismatch')
+          if status.get('status')!='TRAINING_COMPLETE': raise SystemExit(f'bad training status: {status}')
+          verdict=audit.get('verdict','UNKNOWN')
+          print('GENERALIZATION_VERDICT='+verdict)
+          for name,row in audit.get('banks',{}).items():
+              t=row['trained']; g=row['gains']
+              print(name,'PASS='+str(row['passed']),f"RMSE={t['rmse']:.4f}",f"MAE={t['mae']:.4f}",f"within1={100*t['within_one_ratio']:.2f}%",f"count={100*t['root_count_accuracy']:.2f}%",f"RMSEgain={100*g['rmse_gain']:.2f}%")
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh: fh.write('verdict='+verdict+'\n')
+          PY
+
+      - name: Upload one-shot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v4-AMP-fix-evidence
+          path: |
+            trained-output/**
+            kaggle-output/**
+            kaggle-pull/**
+            /tmp/kaggle-push.log
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce unchanged DeepMind quality gate
+        if: steps.monitor.outputs.outcome == 'complete'
+        env:
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          echo "Generalization verdict: ${VERDICT}"
+          test "${VERDICT}" = PASS || { echo 'MAI5-v4 blocked: unchanged per-family DeepMind audit did not PASS.'; exit 42; }

@@ -1,0 +1,66 @@
+name: Export Canonical v5 Tested Files
+
+on:
+  push:
+    branches: ["feat/v5-deepmind-colab"]
+    paths: [".github/workflows/export-canonical-tested.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/v5-deepmind-colab
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: temurin
+
+      - name: Apply deterministic migration
+        run: |
+          set -euo pipefail
+          python scripts/migrate_v5_canonical_numeric.py
+          python scripts/update_v5_tests_for_canonical.py
+
+      - name: Static contract checks
+        run: |
+          set -euo pipefail
+          python -m py_compile colab/train_v5_deepmind.py colab/turbo_train_v5.py kaggle/deepmind_only_train.py kaggle/kaggle_train.py
+          grep -q 'const val FILE_VERSION = 2' app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+          grep -q 'assertEquals(167_800, n.parameterCount())' app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
+          grep -q 'Synthetic pool  : DISABLED' kaggle/deepmind_only_train.py
+          grep -q 'Augmentation    : DISABLED' kaggle/deepmind_only_train.py
+          grep -q 'version != 2' .github/workflows/kaggle-train.yml
+          echo CANONICAL_STATIC_GATE_OK
+
+      - name: Android unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Export exact tested migration
+        uses: actions/upload-artifact@v4
+        with:
+          name: Canonical-v5-tested-files
+          path: |
+            app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt
+            app/src/main/java/com/example/equationsolver/ai/StructuralMathEncoder.kt
+            app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt
+            app/src/test/java/com/example/equationsolver/ai/CanonicalNumericEncoderTest.kt
+            app/src/test/java/com/example/equationsolver/ai/NeuralNetworkTest.kt
+            colab/train_v5_deepmind.py
+            colab/turbo_train_v5.py
+            kaggle/deepmind_only_train.py
+            .github/workflows/kaggle-train.yml
+          retention-days: 7

@@ -6,20 +6,45 @@ plugins {
 android {
     namespace "com.example.equationsolver"
     compileSdk 33
+
     defaultConfig {
-        applicationId "com.example.equationsolver"
+        applicationId "com.example.equationsolver.v5"
         minSdk 21
         targetSdk 33
-        versionCode 4
-        versionName "4.0"
+        versionCode 5
+        versionName "5.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    def ksPath = System.getenv("V5_KEYSTORE_PATH")
+    def ksPassword = System.getenv("V5_KEYSTORE_PASSWORD")
+    def ksAlias = System.getenv("V5_KEY_ALIAS")
+    def keyPasswordValue = System.getenv("V5_KEY_PASSWORD")
+    def hasReleaseKey = ksPath && ksPassword && ksAlias && keyPasswordValue
+
+    signingConfigs {
+        if (hasReleaseKey) {
+            v5Release {
+                storeFile file(ksPath)
+                storePassword ksPassword
+                keyAlias ksAlias
+                keyPassword keyPasswordValue
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+        }
         release {
             minifyEnabled false
+            if (hasReleaseKey) signingConfig signingConfigs.v5Release
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
