@@ -141,14 +141,15 @@ def generate_interop_v4(log_fh):
             depth = torch.tensor(d[None, :], device=device, dtype=torch.float32)
             out = model(kinds, numeric, depth, torch.tensor([fam], device=device, dtype=torch.long))[0]
             slots = (out[:5] * root_scale).detach().cpu().numpy().astype(float)
-            if fam == polynomial:
-                chosen = active_indices(out, numeric[0]).detach().cpu().numpy().astype(int).tolist()
-                presence = np.zeros(5, dtype=float)
-                presence[chosen] = 1.0
-            else:
-                presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)
             state_probs = torch.softmax(out[10:14], dim=0).detach().cpu().numpy().astype(float)
             state = int(np.argmax(state_probs))
+            if fam == polynomial:
+                presence = np.zeros(5, dtype=float)
+                if state == runtime["FINITE"]:
+                    chosen = active_indices(out, numeric[0]).detach().cpu().numpy().astype(int).tolist()
+                    presence[chosen] = 1.0
+            else:
+                presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)
             csv = lambda arr: ",".join(f"{float(x):.9g}" for x in arr)
             rows.append("\t".join([normalized, str(int(fam)), str(state), csv(slots), csv(presence), csv(state_probs)]))
 
