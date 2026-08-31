@@ -2,8 +2,8 @@
 """Apply release-only MAI5 v4 plumbing after the model change is already validated.
 
 No architecture or loss changes are made here. This updates the Kaggle entrypoint,
-registered workflow labels/contracts, and makes official DeepMind audit-bank seeding
-fully deterministic across bank construction order.
+registered workflow labels/contracts, makes official DeepMind audit-bank seeding
+fully deterministic, and keeps Python/Kotlin v4 inference semantics identical.
 """
 
 from __future__ import annotations
@@ -89,10 +89,20 @@ def patch_audit_reseed() -> None:
     path.write_text(text)
 
 
+def patch_v4_wrapper_interop() -> None:
+    path = ROOT / "kaggle/deepmind_only_train_v4.py"
+    text = path.read_text()
+    old = '''            slots = (out[:5] * root_scale).detach().cpu().numpy().astype(float)\n            if fam == polynomial:\n                chosen = active_indices(out, numeric[0]).detach().cpu().numpy().astype(int).tolist()\n                presence = np.zeros(5, dtype=float)\n                presence[chosen] = 1.0\n            else:\n                presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)\n            state_probs = torch.softmax(out[10:14], dim=0).detach().cpu().numpy().astype(float)\n            state = int(np.argmax(state_probs))\n'''
+    new = '''            slots = (out[:5] * root_scale).detach().cpu().numpy().astype(float)\n            state_probs = torch.softmax(out[10:14], dim=0).detach().cpu().numpy().astype(float)\n            state = int(np.argmax(state_probs))\n            if fam == polynomial:\n                presence = np.zeros(5, dtype=float)\n                if state == runtime["FINITE"]:\n                    chosen = active_indices(out, numeric[0]).detach().cpu().numpy().astype(int).tolist()\n                    presence[chosen] = 1.0\n            else:\n                presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)\n'''
+    text = replace_once(text, old, new, "v4 interop finite-state mirror")
+    path.write_text(text)
+
+
 def main() -> None:
     patch_entrypoint()
     patch_registered_workflow()
     patch_audit_reseed()
+    patch_v4_wrapper_interop()
     print("MAI5_V4_RELEASE_PLUMBING_APPLIED")
 
 
