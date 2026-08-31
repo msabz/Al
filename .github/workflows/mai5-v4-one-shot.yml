@@ -1,0 +1,372 @@
+name: MAI5 v4 One-Shot DeepMind GPU
+
+on:
+  push:
+    branches:
+      - feat/v5-deepmind-colab
+    paths:
+      - .github/workflows/mai5-v4-one-shot.yml
+
+concurrency:
+  group: math-ai-v5-mai5-v4-one-shot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight-train-audit-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout exact v4 source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Static MAI5 v4 source contract
+        run: |
+          set -euo pipefail
+          python -m py_compile kaggle/deepmind_only_train_v4.py colab/train_v5_deepmind.py colab/turbo_train_v5.py colab/generalization_audit.py
+          python - <<'PY'
+          from pathlib import Path
+          trainer=Path('colab/train_v5_deepmind.py').read_text()
+          turbo=Path('colab/turbo_train_v5.py').read_text()
+          wrapper=Path('kaggle/deepmind_only_train_v4.py').read_text()
+          kt=Path('app/src/main/java/com/example/equationsolver/ai/NeuralNetwork.kt').read_text()
+          spec=Path('app/src/main/java/com/example/equationsolver/ai/V5ModelSpec.kt').read_text()
+          assert 'MAGIC=0x4D414935; VERSION=4' in trainer
+          assert 'def polynomial_active_indices' in trainer
+          assert 'count_target=root_count[poly_ids].clamp(1,ROOT_SLOTS)-1' in trainer
+          assert 'nonpoly_match=(families[ids]!=POLYNOMIAL)' in trainer
+          assert 'count_target = root_count[poly_ids].clamp(1, ROOT_SLOTS) - 1' in turbo
+          assert 'cardinality_per' in turbo
+          assert 'SOURCE_COMMIT = globals().get("SOURCE_COMMIT")' in wrapper
+          assert 'def enforce_deterministic_audit' in wrapper
+          assert 'if state == runtime["FINITE"]' in wrapper
+          assert 'const val FILE_VERSION = 4' in spec
+          assert 'family != EquationFamily.POLYNOMIAL' in kt
+          assert 'polynomialResidual(c.encoding' in kt
+          print('MAI5_V4_STATIC_SOURCE_CONTRACT_PASS')
+          PY
+
+      - name: Install CPU preflight and Kaggle dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip kaggle
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Exact generated worker and DeepMind bank preflight
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          MATHAI_WORK_DIR: /tmp/mathai-v4-one-shot-preflight
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy, importlib.util, os, pathlib, py_compile, random, re, shutil
+          sha=os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}',sha),sha
+          work=pathlib.Path(os.environ['MATHAI_WORK_DIR'])
+          shutil.rmtree(work,ignore_errors=True); work.mkdir(parents=True)
+          wrapper=pathlib.Path('kaggle/deepmind_only_train_v4.py')
+          text=wrapper.read_text()
+          marker='\n\ntry:\n    core.main()\n    validate_release_outputs()\nfinally:\n    cleanup_large_temporaries()'
+          assert marker in text
+          prefix=text.replace(marker,'\n',1)
+          ns={'__name__':'mai5_v4_exact_preflight','__file__':str(wrapper),'SOURCE_COMMIT':sha}
+          exec(compile(prefix,str(wrapper),'exec'),ns)
+          core=ns['core']
+          with (work/'preflight.log').open('w') as fh:
+              actual=core.prepare_source(fh)
+          assert actual==sha,(actual,sha)
+          worker=pathlib.Path(core.prepare_turbo_worker())
+          py_compile.compile(str(worker),doraise=True)
+          src=worker.read_text()
+          required=(
+              'count_target = root_count[poly_ids].clamp(1, ROOT_SLOTS) - 1',
+              'nonpoly_match = (families[ids] != POLYNOMIAL)',
+              'cardinality_per',
+              'SYNTHETIC_POOL_SIZE = 0',
+              'DEEPMIND_RATIO = 1.0',
+          )
+          missing=[m for m in required if m not in src]
+          if missing: raise SystemExit(f'generated worker missing v4/DeepMind markers: {missing}')
+          trainer=(core.ROOT/'colab/train_v5_deepmind.py').read_text()
+          assert 'MAGIC=0x4D414935; VERSION=4' in trainer
+          audit_path=core.ROOT/'colab/generalization_audit.py'
+          audit_text=audit_path.read_text()
+          assert 'DEEPMIND_BANK_GLOBAL_RESEED' in audit_text
+
+          specmod=importlib.util.spec_from_file_location('v4_exact_audit',audit_path)
+          audit=importlib.util.module_from_spec(specmod); specmod.loader.exec_module(audit)
+          ans=audit.load_runtime(core.ROOT)
+          assert not ans['torch'].cuda.is_available()
+          bank_spec=copy.deepcopy(audit.BANK_SPECS['interpolate_polynomial']); bank_spec['count']=24
+          a=audit.build_official_bank(ans,bank_spec)
+          random.seed(991); ans['np'].random.seed(992); ans['torch'].manual_seed(993)
+          b=audit.build_official_bank(ans,bank_spec)
+          assert [x['eq'] for x in a]==[x['eq'] for x in b]
+          assert all(x['f']==ans['POLYNOMIAL'] and x['state']==ans['FINITE'] for x in a)
+          print('MAI5_V4_EXACT_WORKER_PREFLIGHT_PASS source=',sha,'bank_examples=',len(a))
+          PY
+
+      - name: Authenticate Kaggle
+        id: kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}" || { echo 'KAGGLE_API_TOKEN is missing'; exit 20; }
+          python - <<'PY'
+          import os
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api=KaggleApi(); api.authenticate()
+          owner=(getattr(api,'config_values',{}) or {}).get('username') or ''
+          if not owner: raise SystemExit('Kaggle username unavailable after authentication')
+          ref=owner+'/math-ai-v5-mai5-v4-trainer'
+          print('KAGGLE_AUTH_OK owner='+owner+' kernel='+ref)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write('owner='+owner+'\n'); fh.write('kernel_ref='+ref+'\n')
+          PY
+
+      - name: Prepare exact private T4 kernel
+        env:
+          KAGGLE_OWNER: ${{ steps.kaggle.outputs.owner }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf .kaggle-job
+          mkdir -p .kaggle-job
+          python - <<'PY'
+          import os, pathlib, re
+          sha=os.environ['SOURCE_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('bad source sha')
+          text=f'''#!/usr/bin/env python3
+          import pathlib, re, urllib.request
+          SOURCE_COMMIT = "{sha}"
+          if not re.fullmatch(r"[0-9a-fA-F]{{40}}", SOURCE_COMMIT):
+              raise RuntimeError(f"SOURCE_COMMIT invalid: {{SOURCE_COMMIT!r}}")
+          url = f"https://raw.githubusercontent.com/msabz/Al/{{SOURCE_COMMIT}}/kaggle/deepmind_only_train_v4.py"
+          target = pathlib.Path("/kaggle/working/_deepmind_only_train_v4.py")
+          urllib.request.urlretrieve(url, target)
+          code = target.read_text()
+          exec(compile(code, str(target), "exec"), {{"__name__":"__main__","__file__":str(target),"SOURCE_COMMIT":SOURCE_COMMIT}})
+          '''
+          lines=[line[10:] if line.startswith('          ') else line for line in text.splitlines()]
+          pathlib.Path('.kaggle-job/math_ai_v5_kaggle.py').write_text('\n'.join(lines)+'\n')
+          PY
+          python -m py_compile .kaggle-job/math_ai_v5_kaggle.py
+          cat > .kaggle-job/kernel-metadata.json <<JSON
+          {
+            "id": "${KAGGLE_OWNER}/math-ai-v5-mai5-v4-trainer",
+            "title": "Math AI v5 MAI5-v4 Trainer",
+            "code_file": "math_ai_v5_kaggle.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_internet": true,
+            "machine_shape": "NvidiaTeslaT4",
+            "dataset_sources": [],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          JSON
+          python - <<'PY'
+          import json, os, re
+          meta=json.load(open('.kaggle-job/kernel-metadata.json'))
+          expected=os.environ['KAGGLE_OWNER']+'/math-ai-v5-mai5-v4-trainer'
+          assert meta['id']==expected,(meta['id'],expected)
+          slug=re.sub(r'[^a-z0-9]+','-',meta['title'].lower()).strip('-')
+          assert slug=='math-ai-v5-mai5-v4-trainer',slug
+          print('KAGGLE_V4_ID_TITLE_CONTRACT_OK',expected)
+          PY
+
+      - name: Launch exactly one Kaggle T4 training
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p .kaggle-job --accelerator NvidiaTeslaT4 --timeout 18000 | tee /tmp/kaggle-push.log
+
+      - name: Monitor Kaggle GPU job
+        id: monitor
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          set -euo pipefail
+          outcome=timeout
+          for i in $(seq 1 330); do
+            status="$(kaggle kernels status "${KERNEL_REF}" 2>&1 || true)"
+            echo "[$(date -u +%H:%M:%S)] ${status}"
+            lower="$(printf '%s' "${status}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s' "${lower}" | grep -Eq 'complete|success'; then outcome=complete; break; fi
+            if printf '%s' "${lower}" | grep -Eq 'error|failed|cancelled|canceled'; then outcome=failed; break; fi
+            sleep 60
+          done
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          test "${outcome}" = complete || { echo "Kaggle kernel outcome=${outcome}"; exit 30; }
+
+      - name: Download Kaggle outputs and diagnostics
+        if: always()
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+        run: |
+          mkdir -p kaggle-output kaggle-pull
+          kaggle kernels output "${KERNEL_REF}" -p kaggle-output -o --page-size 200 || true
+          kaggle kernels pull "${KERNEL_REF}" -p kaggle-pull -m || true
+          find kaggle-output kaggle-pull -maxdepth 3 -type f -printf '%p %k KB\n' | sort || true
+
+      - name: Normalize and verify MAI5-v4 outputs
+        id: result
+        if: steps.monitor.outputs.outcome == 'complete'
+        run: |
+          set -euo pipefail
+          mkdir -p trained-output
+          copy_one() {
+            name="$1"
+            src="$(find kaggle-output -type f -name "$name" -print -quit)"
+            test -n "$src" || { echo "Missing Kaggle output: $name"; exit 40; }
+            cp "$src" "trained-output/$name"
+          }
+          copy_one math_ai_v5_best.mai5
+          copy_one generalization_audit.json
+          copy_one training_report.json
+          copy_one LEARNING_EVIDENCE.txt
+          copy_one v5_interop_expected.tsv
+          copy_one kaggle_job_status.json
+          src="$(find kaggle-output -type f -name training_console.log -print -quit)" || true
+          test -z "$src" || cp "$src" trained-output/training_console.log
+          python - <<'PY'
+          import json, os, pathlib, struct
+          expected_banks={'interpolate_linear_1d','interpolate_linear_2d','interpolate_polynomial','extrapolate_polynomial'}
+          model=pathlib.Path('trained-output/math_ai_v5_best.mai5')
+          if model.stat().st_size < 1_000_000: raise SystemExit(f'MAI5 unexpectedly small: {model.stat().st_size}')
+          with model.open('rb') as fh: magic,version=struct.unpack('>ii',fh.read(8))
+          if magic!=0x4D414935 or version!=4: raise SystemExit(f'Bad MAI5-v4 header: magic={magic:#x} version={version}')
+          audit=json.loads(pathlib.Path('trained-output/generalization_audit.json').read_text())
+          if audit.get('schema')!='DEEPMIND_ONLY_PER_FAMILY_V2': raise SystemExit(f"Unexpected audit schema: {audit.get('schema')}")
+          if set(audit.get('banks',{}))!=expected_banks: raise SystemExit(f"Unexpected audit banks: {sorted(audit.get('banks',{}))}")
+          report=json.loads(pathlib.Path('trained-output/training_report.json').read_text())
+          if report.get('model',{}).get('format')!='MAI5 v4': raise SystemExit(f"Report format mismatch: {report.get('model',{}).get('format')}")
+          if report.get('source_commit')!=os.environ['GITHUB_SHA']: raise SystemExit('Training report source commit mismatch')
+          status=json.loads(pathlib.Path('trained-output/kaggle_job_status.json').read_text())
+          if status.get('status')!='TRAINING_COMPLETE': raise SystemExit(f'Kaggle status not complete: {status}')
+          verdict=audit.get('verdict','UNKNOWN')
+          print('GENERALIZATION_VERDICT='+verdict)
+          for name,row in audit['banks'].items():
+              t=row['trained']; g=row['gains']
+              print(name,'PASS='+str(row['passed']),f"RMSE={t['rmse']:.4f}",f"MAE={t['mae']:.4f}",f"within1={t['within_one_ratio']*100:.2f}%",f"count={t['root_count_accuracy']*100:.2f}%",f"RMSEgain={g['rmse_gain']*100:.2f}%")
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh: fh.write('verdict='+verdict+'\n')
+          PY
+
+      - name: Upload Kaggle v4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v4-Kaggle-evidence
+          path: |
+            trained-output/**
+            kaggle-output/**
+            kaggle-pull/**
+            /tmp/kaggle-push.log
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce unchanged per-family quality gate
+        if: steps.monitor.outputs.outcome == 'complete'
+        env:
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          echo "Generalization verdict: ${VERDICT}"
+          test "${VERDICT}" = PASS || { echo 'MAI5-v4 blocked: unchanged per-family DeepMind audit did not PASS.'; exit 42; }
+
+      - name: Embed verified MAI5-v4 and Python interop reference
+        if: steps.result.outputs.verdict == 'PASS'
+        run: |
+          mkdir -p app/src/main/assets
+          cp trained-output/math_ai_v5_best.mai5 app/src/main/assets/default_model.mai5
+          cp trained-output/v5_interop_expected.tsv app/src/main/assets/v5_interop_expected.tsv
+
+      - name: Set up JDK 11
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Set up Gradle cache
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Python-to-Kotlin MAI5-v4 interop gate and Android tests
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build verified debug APK
+        if: steps.result.outputs.verdict == 'PASS'
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare optional stable release keystore
+        if: steps.result.outputs.verdict == 'PASS'
+        env:
+          V5_KEYSTORE_B64: ${{ secrets.V5_KEYSTORE_B64 }}
+        run: |
+          if [ -n "${V5_KEYSTORE_B64}" ]; then
+            echo "${V5_KEYSTORE_B64}" | base64 -d > "$RUNNER_TEMP/math-ai-v5.jks"
+          fi
+
+      - name: Build signed release when signing secrets exist
+        if: steps.result.outputs.verdict == 'PASS'
+        env:
+          V5_KEYSTORE_PATH: ${{ runner.temp }}/math-ai-v5.jks
+          V5_KEYSTORE_PASSWORD: ${{ secrets.V5_KEYSTORE_PASSWORD }}
+          V5_KEY_ALIAS: ${{ secrets.V5_KEY_ALIAS }}
+          V5_KEY_PASSWORD: ${{ secrets.V5_KEY_PASSWORD }}
+        run: |
+          if [ -f "${V5_KEYSTORE_PATH}" ]; then
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            echo 'Stable release signing not configured; verified debug APK will be uploaded.'
+          fi
+
+      - name: Upload verified MAI5-v4 APK and model
+        if: steps.result.outputs.verdict == 'PASS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MathAI-v5-MAI5-v4-VERIFIED
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+            trained-output/math_ai_v5_best.mai5
+            trained-output/training_report.json
+            trained-output/generalization_audit.json
+            trained-output/LEARNING_EVIDENCE.txt
+            trained-output/v5_interop_expected.tsv
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Write one-shot run summary
+        if: always()
+        env:
+          KERNEL_REF: ${{ steps.kaggle.outputs.kernel_ref }}
+          OUTCOME: ${{ steps.monitor.outputs.outcome }}
+          VERDICT: ${{ steps.result.outputs.verdict }}
+        run: |
+          {
+            echo '## Math AI v5 — MAI5 v4 one-shot'
+            echo "- Kernel: \`${KERNEL_REF}\`"
+            echo "- Kaggle outcome: \`${OUTCOME}\`"
+            echo "- Generalization verdict: \`${VERDICT}\`"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
