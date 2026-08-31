@@ -68,7 +68,7 @@ data class V5Prediction(
 
 object V5ModelSpec {
     const val FILE_MAGIC = 0x4D414935 // "MAI5"
-    const val FILE_VERSION = 3
+    const val FILE_VERSION = 4
 
     const val MAX_NODES = 80
     const val TOKEN_VOCAB = 22
@@ -87,7 +87,7 @@ object V5ModelSpec {
     const val HEAD_OUTPUT = ROOT_SLOTS + ROOT_SLOTS + STATE_COUNT
 
     const val ROOT_SCALE = 100.0
-    const val PRESENCE_THRESHOLD = 0.50
+    const val PRESENCE_THRESHOLD = 0.50 // non-polynomial heads only; polynomial uses 5-way root-count logits
     const val MAX_GRADIENT_NORM = 5.0
     const val WEIGHT_DECAY = 1e-5
     const val CANONICAL_COEFF_SLOTS = 6

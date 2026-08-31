@@ -544,7 +544,7 @@ def stable_loss(out, roots, root_count, systems, states, families, numeric, othe
     sysmask = finite & (families == SYSTEM)
     nonsys = finite & (families != SYSTEM)
     if sysmask.any():
-        assigned_vals[sysmask,:2] = systems[sysmask,:2] / ROOT_SCALE
+        assigned_vals[sysmask,:2] = (systems[sysmask,:2] / ROOT_SCALE).to(out.dtype)
         assigned_pres[sysmask,:2] = 1
     ids = torch.where(nonsys)[0]
     if len(ids):
@@ -559,7 +559,8 @@ def stable_loss(out, roots, root_count, systems, states, families, numeric, othe
         root_cost = F.smooth_l1_loss(predv.expand_as(pv), pv, reduction="none", beta=0.1)
         root_cost = (root_cost * pp).sum(-1) / active
         pres_cost = F.binary_cross_entropy_with_logits(predlog, pp, reduction="none").mean(-1)
-        cost = root_cost + 0.35 * pres_cost
+        nonpoly_match = (families[ids] != POLYNOMIAL).to(out.dtype)[:,None]
+        cost = root_cost + 0.35 * pres_cost * nonpoly_match
         best = cost.argmin(-1)
         rows = torch.arange(len(ids), device=device)
         assigned_vals[ids] = pv[rows, best]
@@ -570,9 +571,22 @@ def stable_loss(out, roots, root_count, systems, states, families, numeric, othe
         root_loss = (((per * assigned_pres).sum(-1) / active)[finite]).mean()
     else:
         root_loss = out.sum() * 0
-    presence = F.binary_cross_entropy_with_logits(out[:,5:10], assigned_pres)
-    residual = out.sum() * 0
+
+    cardinality_per = torch.zeros(len(out), device=device, dtype=out.dtype)
+    cardinality_used = torch.zeros(len(out), device=device, dtype=torch.bool)
+    nonpoly = families != POLYNOMIAL
+    if nonpoly.any():
+        per_card = F.binary_cross_entropy_with_logits(out[nonpoly,5:10], assigned_pres[nonpoly], reduction="none").mean(-1)
+        cardinality_per[nonpoly] = per_card
+        cardinality_used[nonpoly] = True
     poly_ids = torch.where(finite & (families == POLYNOMIAL))[0]
+    if len(poly_ids):
+        count_target = root_count[poly_ids].clamp(1, ROOT_SLOTS) - 1
+        cardinality_per[poly_ids] = F.cross_entropy(out[poly_ids,5:10], count_target, reduction="none")
+        cardinality_used[poly_ids] = True
+    cardinality = cardinality_per[cardinality_used].mean() if cardinality_used.any() else out.sum() * 0
+
+    residual = out.sum() * 0
     if len(poly_ids):
         coeff = numeric[poly_ids,:CANONICAL_COEFF_SLOTS].to(out.dtype)
         z = out[poly_ids,:ROOT_SLOTS]
@@ -585,9 +599,8 @@ def stable_loss(out, roots, root_count, systems, states, families, numeric, othe
     consistency = out.sum() * 0
     if other_out is not None:
         consistency = F.smooth_l1_loss(out, other_out, beta=0.1)
-    total = root_loss + 0.35 * presence + 0.35 * state_loss + POLYNOMIAL_RESIDUAL_WEIGHT * residual + CONSISTENCY_WEIGHT * consistency
-    return total, root_loss, presence, state_loss, residual, consistency
-
+    total = root_loss + 0.35 * cardinality + 0.35 * state_loss + POLYNOMIAL_RESIDUAL_WEIGHT * residual + CONSISTENCY_WEIGHT * consistency
+    return total, root_loss, cardinality, state_loss, residual, consistency
 
 def turbo_adam_step(lr):
     ns["adam_step"] += 1
@@ -720,7 +733,7 @@ for step_idx in range(start_step, TOTAL_STEPS + 1):
     with torch.autocast("cuda", dtype=torch.float16, enabled=USE_AMP):
         out = train_model(k,n,d,f)
         other = train_model(*eqv)
-        loss, root_l, pres_l, state_l, residual_l, cons_l = stable_loss(out,r,rc,sy,st,f,n,other)
+        loss, root_l, card_l, state_l, residual_l, cons_l = stable_loss(out,r,rc,sy,st,f,n,other)
 
     loss_value = float(loss.detach())
     if (not math.isfinite(loss_value)) or loss_value > 500.0:
@@ -745,7 +758,7 @@ for step_idx in range(start_step, TOTAL_STEPS + 1):
         print(
             f"TRAIN step={step_idx:6d}/{TOTAL_STEPS} "
             f"loss={loss_value:8.5f} root={float(root_l.detach()):7.4f} "
-            f"pres={float(pres_l.detach()):6.4f} state={float(state_l.detach()):6.4f} "
+            f"card={float(card_l.detach()):6.4f} state={float(state_l.detach()):6.4f} "
             f"res={float(residual_l.detach()):6.4f} cons={float(cons_l.detach()):6.4f} lr={lr:.2e} "
             f"grad={grad_norm:8.3f} clip={clip_scale:5.3f} "
             f"throughput={samples_sec:,.0f} ex/s ETA={eta/60:.1f}m",

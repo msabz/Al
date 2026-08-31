@@ -11,8 +11,8 @@ import java.io.DataOutputStream
 import kotlin.random.Random
 
 class NeuralNetworkTest {
-    @Test fun v3SemanticContractIsActive() {
-        assertEquals(3, V5ModelSpec.FILE_VERSION)
+    @Test fun v4SemanticContractIsActive() {
+        assertEquals(4, V5ModelSpec.FILE_VERSION)
         assertEquals(7, V5ModelSpec.POLYNOMIAL_FEATURE_SLOTS)
         assertEquals(9, V5ModelSpec.SYSTEM_FEATURE_SLOTS)
     }

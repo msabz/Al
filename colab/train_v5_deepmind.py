@@ -43,7 +43,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
 # ========================= MAI5 CONTRACT (must match Android) =========================
-MAGIC=0x4D414935; VERSION=3
+MAGIC=0x4D414935; VERSION=4
 MAX_NODES=80; TOKEN_VOCAB=22; EMB=16; EXTRA=3; NODE_FEATURES=19; INPUT=1520
 SHARED1=96; SHARED2=64; HEAD_HIDDEN=48; HEADS=4; ROOT_SLOTS=5; STATES=4; HEAD_OUT=14
 ROOT_SCALE=100.0; MAX_GRAD_NORM=5.0; CANONICAL_COEFF_SLOTS=6; POLYNOMIAL_FEATURE_SLOTS=7; SYSTEM_FEATURE_SLOTS=9; POLYNOMIAL_RESIDUAL_WEIGHT=0.15
@@ -418,29 +418,54 @@ def android_adam_step(lr):
 
 PERMS=torch.tensor(list(__import__('itertools').permutations(range(ROOT_SLOTS))),device=device,dtype=torch.long)
 
+def polynomial_active_indices(out_row, numeric_row):
+    """Return exactly k polynomial root slots: k is learned, ranking is by |q(z)|."""
+    count = int(torch.argmax(out_row[5:10]).item()) + 1
+    coeff = numeric_row[:CANONICAL_COEFF_SLOTS].to(device=out_row.device, dtype=out_row.dtype)
+    z = out_row[:ROOT_SLOTS]
+    q = coeff[-1].expand_as(z)
+    for power in range(CANONICAL_COEFF_SLOTS - 2, -1, -1):
+        q = q * z + coeff[power]
+    return torch.topk(torch.abs(q), k=count, largest=False).indices
+
+
 def loss_fn(out,roots,root_count,systems,states,families,numeric,other_out=None):
-    # state loss
     state_loss=F.cross_entropy(out[:,10:14],states)
-    assigned_vals=torch.zeros((len(out),ROOT_SLOTS),device=device); assigned_pres=torch.zeros_like(assigned_vals)
+    assigned_vals=torch.zeros((len(out),ROOT_SLOTS),device=device,dtype=out.dtype)
+    assigned_pres=torch.zeros_like(assigned_vals)
     finite=states==FINITE; sysmask=finite & (families==SYSTEM); nonsys=finite & (families!=SYSTEM)
     if sysmask.any():
-        assigned_vals[sysmask,:2]=systems[sysmask,:2]/ROOT_SCALE; assigned_pres[sysmask,:2]=1
+        assigned_vals[sysmask,:2]=(systems[sysmask,:2]/ROOT_SCALE).to(out.dtype); assigned_pres[sysmask,:2]=1
     ids=torch.where(nonsys)[0]
     if len(ids):
-        tv=roots[ids]/ROOT_SCALE; tc=root_count[ids]
-        basepres=(torch.arange(ROOT_SLOTS,device=device)[None,:] < tc[:,None]).float()
-        # target permutation: [N,120,5]
+        tv=(roots[ids]/ROOT_SCALE).to(out.dtype); tc=root_count[ids]
+        basepres=(torch.arange(ROOT_SLOTS,device=device)[None,:] < tc[:,None]).to(out.dtype)
         pv=tv[:,PERMS]; pp=basepres[:,PERMS]
         predv=out[ids,:5][:,None,:]; predlog=out[ids,5:10][:,None,:].expand(-1,len(PERMS),-1)
         active=pp.sum(-1).clamp_min(1)
-        cost=(((predv-pv)**2)*pp).sum(-1)/active + .35*F.binary_cross_entropy_with_logits(predlog,pp,reduction='none').mean(-1)
+        root_cost=(((predv-pv)**2)*pp).sum(-1)/active
+        pres_cost=F.binary_cross_entropy_with_logits(predlog,pp,reduction='none').mean(-1)
+        nonpoly_match=(families[ids]!=POLYNOMIAL).to(out.dtype)[:,None]
+        cost=root_cost + .35*pres_cost*nonpoly_match
         best=cost.argmin(-1); rows=torch.arange(len(ids),device=device)
         assigned_vals[ids]=pv[rows,best]; assigned_pres[ids]=pp[rows,best]
     active=assigned_pres.sum(-1).clamp_min(1)
     root_loss=((((out[:,:5]-assigned_vals)**2)*assigned_pres).sum(-1)/active)[finite].mean() if finite.any() else out.sum()*0
-    presence=F.binary_cross_entropy_with_logits(out[:,5:10],assigned_pres)
-    residual=out.sum()*0
+
+    cardinality_per=torch.zeros(len(out),device=device,dtype=out.dtype)
+    cardinality_used=torch.zeros(len(out),device=device,dtype=torch.bool)
+    nonpoly=families!=POLYNOMIAL
+    if nonpoly.any():
+        per=F.binary_cross_entropy_with_logits(out[nonpoly,5:10],assigned_pres[nonpoly],reduction='none').mean(-1)
+        cardinality_per[nonpoly]=per; cardinality_used[nonpoly]=True
     poly_ids=torch.where(finite & (families==POLYNOMIAL))[0]
+    if len(poly_ids):
+        count_target=root_count[poly_ids].clamp(1,ROOT_SLOTS)-1
+        cardinality_per[poly_ids]=F.cross_entropy(out[poly_ids,5:10],count_target,reduction='none')
+        cardinality_used[poly_ids]=True
+    cardinality=cardinality_per[cardinality_used].mean() if cardinality_used.any() else out.sum()*0
+
+    residual=out.sum()*0
     if len(poly_ids):
         coeff=numeric[poly_ids,:CANONICAL_COEFF_SLOTS].to(out.dtype)
         z=out[poly_ids,:ROOT_SLOTS]
@@ -449,7 +474,7 @@ def loss_fn(out,roots,root_count,systems,states,families,numeric,other_out=None)
         mask=assigned_pres[poly_ids]
         per=F.smooth_l1_loss(q,torch.zeros_like(q),reduction='none',beta=0.25)
         residual=((per*mask).sum(-1)/mask.sum(-1).clamp_min(1)).mean()
-    total=root_loss + .35*presence + .35*state_loss + POLYNOMIAL_RESIDUAL_WEIGHT*residual
+    total=root_loss + .35*cardinality + .35*state_loss + POLYNOMIAL_RESIDUAL_WEIGHT*residual
     if other_out is not None: total=total + CONSISTENCY_WEIGHT*F.mse_loss(out,other_out)
     return total
 
@@ -661,7 +686,12 @@ def evaluate():
                 if e['f']==SYSTEM:
                     pv=out[i,:2].cpu().numpy()*ROOT_SCALE; ev=np.asarray(e['system']); errs=np.abs(pv-ev)
                 else:
-                    probs=torch.sigmoid(out[i,5:10]); pv=(out[i,:5][probs>=.5]*ROOT_SCALE).cpu().numpy(); ev=np.asarray(e['roots'])
+                    if e['f']==POLYNOMIAL:
+                        active_idx=polynomial_active_indices(out[i],n[i])
+                        pv=(out[i,:5][active_idx]*ROOT_SCALE).cpu().numpy()
+                    else:
+                        probs=torch.sigmoid(out[i,5:10]); pv=(out[i,:5][probs>=.5]*ROOT_SCALE).cpu().numpy()
+                    ev=np.asarray(e['roots'])
                     if len(ev)==0: continue
                     used=set(); errs=[]
                     for v in ev:

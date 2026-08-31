@@ -16,7 +16,7 @@ import kotlin.random.Random
  *
  * Head output layout:
  *   0..4   root/value slots (normalized)
- *   5..9   presence logits
+ *   5..9   LINEAR/ANALYTIC/SYSTEM: presence logits; POLYNOMIAL: root-count logits (classes 1..5)
  *   10..13 solution-state logits
  *
  * Root heads use permutation-invariant masked set loss. The system head keeps
@@ -221,7 +221,7 @@ class NeuralNetwork(private val random: Random = Random.Default) {
         val grad = FloatArray(V5ModelSpec.HEAD_OUTPUT)
         var loss = 0.0
         val rootWeight = 1.0
-        val presenceWeight = 0.35
+        val cardinalityWeight = 0.35
         val stateWeight = 0.35
 
         val assignedValues = FloatArray(V5ModelSpec.ROOT_SLOTS)
@@ -235,7 +235,7 @@ class NeuralNetwork(private val random: Random = Random.Default) {
                 }
             } else {
                 val roots = target.canonicalRoots()
-                val best = bestPermutation(out, roots)
+                val best = bestPermutation(out, roots, target.family)
                 for (slot in 0 until V5ModelSpec.ROOT_SLOTS) {
                     val source = best[slot]
                     if (source < roots.size) {
@@ -253,11 +253,29 @@ class NeuralNetwork(private val random: Random = Random.Default) {
                 loss += rootWeight * d * d / activeCount
                 grad[slot] += (2.0 * rootWeight * d / activeCount).toFloat()
             }
-            val logitIndex = V5ModelSpec.ROOT_SLOTS + slot
-            val p = sigmoid(out[logitIndex])
-            val label = if (assignedPresence[slot]) 1.0 else 0.0
-            loss += presenceWeight * binaryCrossEntropy(p, label) / V5ModelSpec.ROOT_SLOTS
-            grad[logitIndex] += (presenceWeight * (p - label) / V5ModelSpec.ROOT_SLOTS).toFloat()
+        }
+
+        if (target.family == EquationFamily.POLYNOMIAL) {
+            if (target.state == SolutionState.FINITE) {
+                val rootCount = target.canonicalRoots().size.coerceIn(1, V5ModelSpec.ROOT_SLOTS)
+                val countStart = V5ModelSpec.ROOT_SLOTS
+                val countLogits = FloatArray(V5ModelSpec.ROOT_SLOTS) { out[countStart + it] }
+                val countProbs = softmax(countLogits)
+                val countClass = rootCount - 1
+                loss += -cardinalityWeight * ln(countProbs[countClass].coerceAtLeast(1e-9))
+                for (i in countProbs.indices) {
+                    val label = if (i == countClass) 1.0 else 0.0
+                    grad[countStart + i] += (cardinalityWeight * (countProbs[i] - label)).toFloat()
+                }
+            }
+        } else {
+            for (slot in 0 until V5ModelSpec.ROOT_SLOTS) {
+                val logitIndex = V5ModelSpec.ROOT_SLOTS + slot
+                val p = sigmoid(out[logitIndex])
+                val label = if (assignedPresence[slot]) 1.0 else 0.0
+                loss += cardinalityWeight * binaryCrossEntropy(p, label) / V5ModelSpec.ROOT_SLOTS
+                grad[logitIndex] += (cardinalityWeight * (p - label) / V5ModelSpec.ROOT_SLOTS).toFloat()
+            }
         }
 
         if (target.state == SolutionState.FINITE && target.family == EquationFamily.POLYNOMIAL) {
@@ -294,7 +312,7 @@ class NeuralNetwork(private val random: Random = Random.Default) {
     }
 
     /** Returns, for every prediction slot, the index into roots or roots.size+ for padding. */
-    private fun bestPermutation(out: FloatArray, roots: DoubleArray): IntArray {
+    private fun bestPermutation(out: FloatArray, roots: DoubleArray, family: EquationFamily): IntArray {
         val paddedValues = FloatArray(V5ModelSpec.ROOT_SLOTS)
         val paddedPresent = BooleanArray(V5ModelSpec.ROOT_SLOTS)
         for (i in roots.indices) {
@@ -312,8 +330,10 @@ class NeuralNetwork(private val random: Random = Random.Default) {
                     val d = (out[slot] - paddedValues[source]).toDouble()
                     cost += d * d
                 }
-                val p = sigmoid(out[V5ModelSpec.ROOT_SLOTS + slot])
-                cost += 0.35 * binaryCrossEntropy(p, if (present) 1.0 else 0.0)
+                if (family != EquationFamily.POLYNOMIAL) {
+                    val p = sigmoid(out[V5ModelSpec.ROOT_SLOTS + slot])
+                    cost += 0.35 * binaryCrossEntropy(p, if (present) 1.0 else 0.0)
+                }
             }
             if (cost < bestCost) {
                 bestCost = cost
@@ -446,14 +466,41 @@ class NeuralNetwork(private val random: Random = Random.Default) {
         }
     }
 
+    private fun polynomialResidual(encoding: StructuralMathEncoder.Encoding, normalizedRoot: Double): Double {
+        var q = encoding.numeric[V5ModelSpec.CANONICAL_COEFF_SLOTS - 1].toDouble()
+        for (power in V5ModelSpec.CANONICAL_COEFF_SLOTS - 2 downTo 0) {
+            q = q * normalizedRoot + encoding.numeric[power].toDouble()
+        }
+        return kotlin.math.abs(q)
+    }
+
     private fun predictionFromCache(c: Cache): V5Prediction {
         val values = DoubleArray(V5ModelSpec.ROOT_SLOTS) { c.out[it].toDouble() * V5ModelSpec.ROOT_SCALE }
-        val presence = DoubleArray(V5ModelSpec.ROOT_SLOTS) { sigmoid(c.out[V5ModelSpec.ROOT_SLOTS + it]) }
         val stateStart = V5ModelSpec.ROOT_SLOTS * 2
         val stateProbs = softmax(FloatArray(V5ModelSpec.STATE_COUNT) { c.out[stateStart + it] })
-        var best = 0
-        for (i in 1 until stateProbs.size) if (stateProbs[i] > stateProbs[best]) best = i
-        return V5Prediction(c.encoding.family, SolutionState.fromId(best), stateProbs, values, presence)
+        var bestState = 0
+        for (i in 1 until stateProbs.size) if (stateProbs[i] > stateProbs[bestState]) bestState = i
+        val state = SolutionState.fromId(bestState)
+
+        val presence = if (c.encoding.family == EquationFamily.POLYNOMIAL) {
+            if (state != SolutionState.FINITE) {
+                DoubleArray(V5ModelSpec.ROOT_SLOTS)
+            } else {
+                val countLogits = FloatArray(V5ModelSpec.ROOT_SLOTS) { c.out[V5ModelSpec.ROOT_SLOTS + it] }
+                val countProbs = softmax(countLogits)
+                var countClass = 0
+                for (i in 1 until countProbs.size) if (countProbs[i] > countProbs[countClass]) countClass = i
+                val predictedCount = countClass + 1
+                val ranked = (0 until V5ModelSpec.ROOT_SLOTS).sortedBy { slot ->
+                    polynomialResidual(c.encoding, c.out[slot].toDouble())
+                }
+                val selected = ranked.take(predictedCount).toSet()
+                DoubleArray(V5ModelSpec.ROOT_SLOTS) { if (it in selected) 1.0 else 0.0 }
+            }
+        } else {
+            DoubleArray(V5ModelSpec.ROOT_SLOTS) { sigmoid(c.out[V5ModelSpec.ROOT_SLOTS + it]) }
+        }
+        return V5Prediction(c.encoding.family, state, stateProbs, values, presence)
     }
 
     fun parameterCount(): Int {

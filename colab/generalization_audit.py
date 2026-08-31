@@ -155,24 +155,29 @@ def predict_raw(ns, model, equation):
     k, n, d, fam, normalized = ns["encode"](equation)
     device = ns["device"]
     with torch.no_grad():
-        out = model(
-            torch.tensor(k[None, :], device=device, dtype=torch.long),
-            torch.tensor(n[None, :], device=device, dtype=torch.float32),
-            torch.tensor(d[None, :], device=device, dtype=torch.float32),
-            torch.tensor([fam], device=device, dtype=torch.long),
-        )[0]
+        kinds = torch.tensor(k[None, :], device=device, dtype=torch.long)
+        numeric = torch.tensor(n[None, :], device=device, dtype=torch.float32)
+        depth = torch.tensor(d[None, :], device=device, dtype=torch.float32)
+        out = model(kinds, numeric, depth, torch.tensor([fam], device=device, dtype=torch.long))[0]
         slots = (out[:5] * ns["ROOT_SCALE"]).detach().cpu().numpy().astype(float)
-        presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)
+        if fam == ns["POLYNOMIAL"]:
+            count_probs = torch.softmax(out[5:10], dim=0).detach().cpu().numpy().astype(float)
+            active = ns["polynomial_active_indices"](out, numeric[0]).detach().cpu().numpy().astype(int).tolist()
+            presence = np.zeros(5, dtype=float)
+            presence[active] = 1.0
+        else:
+            count_probs = np.asarray([], dtype=float)
+            presence = torch.sigmoid(out[5:10]).detach().cpu().numpy().astype(float)
         state_probs = torch.softmax(out[10:14], dim=0).detach().cpu().numpy().astype(float)
     return {
         "family": int(fam),
         "state": int(np.argmax(state_probs)),
         "slots": slots,
         "presence": presence,
+        "root_count_probs": count_probs,
         "state_probs": state_probs,
         "normalized": normalized,
     }
-
 
 def eval_examples(ns, model, examples):
     np = ns["np"]
