@@ -1,0 +1,91 @@
+name: Validate v10 Sparse Onion on DeepMind
+
+on:
+  push:
+    branches:
+      - feat/v10-onion-sparse-intersection-test
+    paths:
+      - scripts/cpu_v10_onion_sparse_intersection_deepmind.py
+      - .github/workflows/validate-v10-onion-sparse-intersection.yml
+
+permissions:
+  contents: read
+
+jobs:
+  official-deepmind-sparse-onion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU-only scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static source contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/cpu_v6_manifold_lattice_deepmind.py
+          python -m py_compile scripts/cpu_v9_onion_corrected_deepmind.py
+          python -m py_compile scripts/cpu_v10_onion_sparse_intersection_deepmind.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/cpu_v10_onion_sparse_intersection_deepmind.py').read_text()
+          required=(
+              'OFFICIAL_DATA_CONTRACT',
+              'BRANCHES = 6',
+              'DEPTH = 3',
+              'intersection_matrix_from_clouds',
+              '_mutual_matches',
+              'MULTIPOINT_BOOST',
+              'SparseIntersectionOnion',
+              'dynamic_plasticity',
+              'adaptive_alpha',
+              'NO_TRAINABLE_ROUTE_GATES',
+              'V10_SPARSE_ONION_DEEPMIND_',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'missing v10 markers: {missing}')
+          low=s.lower()
+          forbidden=('synthetic_pool', 'cuda', 'gate_logits')
+          found=[x for x in forbidden if x in low]
+          if found:
+              raise SystemExit(f'forbidden v10 implementation marker: {found}')
+          print('V10_STATIC_SOURCE_CONTRACT_PASS')
+          PY
+
+      - name: Geometry and safety preflight
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v10_onion_sparse_intersection_deepmind.py --preflight | tee /tmp/v10-preflight.log
+          grep -q 'V10_PREFLIGHT_PASS' /tmp/v10-preflight.log
+
+      - name: Run parameter-matched DeepMind sparse-onion comparison
+        run: |
+          set -euo pipefail
+          python scripts/cpu_v10_onion_sparse_intersection_deepmind.py | tee /tmp/v10-sparse-onion.log
+          grep -Eq 'V10_SPARSE_ONION_DEEPMIND_(CLEAR_SIGNAL|NO_CLEAR_SIGNAL)' /tmp/v10-sparse-onion.log
+
+      - name: Upload CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-sparse-onion-deepmind-cpu-evidence
+          path: |
+            /tmp/v10-preflight.log
+            /tmp/v10-sparse-onion.log
+          if-no-files-found: warn
+          retention-days: 30
