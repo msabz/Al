@@ -1,11 +1,8 @@
 package com.example.equationsolver
 
 import android.app.Application
-import com.example.equationsolver.ai.ModelManager
+import com.example.equationsolver.ai.ModelStore
 
 class EquationSolverApp : Application() {
-    override fun onCreate() {
-        super.onCreate()
-        ModelManager.init(this)
-    }
+    override fun onCreate() { super.onCreate(); ModelStore.init(this) }
 }
