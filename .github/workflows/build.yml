@@ -1,5 +1,7 @@
 name: RSNN Lab V2 Android Build
 on:
+  push:
+    branches: [ "feat/open-growth-rsnn-v2-int8-android" ]
   workflow_dispatch:
 jobs:
   build:
