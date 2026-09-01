@@ -1,0 +1,102 @@
+name: DeepMind P30 INT8 Protected Reset Ablation
+
+on:
+  push:
+    branches:
+      - feat/p30-int8-protected-reset-ablation
+    paths:
+      - scripts/pruned_snn_vs_mlp.py
+      - scripts/deepmind_pruned_snn_stress.py
+      - scripts/deepmind_rsnn_pruning_sweep.py
+      - scripts/deepmind_p30_int8_ablation.py
+      - scripts/deepmind_p30_int8_protected_reset_ablation.py
+      - .github/workflows/deepmind-p30-int8-protected-reset-ablation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protected-reset:
+    name: Baseline vs selective reset vs protected-core reset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/pruned_snn_vs_mlp.py \
+            scripts/deepmind_pruned_snn_stress.py \
+            scripts/deepmind_rsnn_pruning_sweep.py \
+            scripts/deepmind_p30_int8_ablation.py \
+            scripts/deepmind_p30_int8_protected_reset_ablation.py
+          grep -q 'ACTIVE_EXPECTED = 18816' scripts/deepmind_p30_int8_protected_reset_ablation.py
+          grep -q 'RESET_EPOCHS = (160, 180, 200, 220, 240)' scripts/deepmind_p30_int8_protected_reset_ablation.py
+          grep -q 'RESET_FRACTION = 0.05' scripts/deepmind_p30_int8_protected_reset_ablation.py
+          grep -q 'PROTECT_STREAK = 2' scripts/deepmind_p30_int8_protected_reset_ablation.py
+          grep -q 'topology_changes_after_p30' scripts/deepmind_p30_int8_protected_reset_ablation.py
+          echo 'PROTECTED_RESET_STATIC_CONTRACT_PASS'
+
+      - name: Preflight fixed topology reset and protected core
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_p30_int8_protected_reset_ablation.py --preflight | tee /tmp/protected-reset-preflight.log
+          grep -q 'PROTECTED_RESET_PREFLIGHT_PASS' /tmp/protected-reset-preflight.log
+
+      - name: Run exact 5-seed three-way DeepMind ablation
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_p30_int8_protected_reset_ablation.py \
+            --train-size 8192 \
+            --eval-size 2048 \
+            --ill-pool-size 4096 \
+            --ill-size 1024 \
+            --epochs 300 \
+            --batch-size 256 \
+            --seeds 11,22,33,44,55 \
+            --output-dir deepmind-p30-int8-protected-reset-output | tee /tmp/protected-reset.log
+          grep -q 'project synthetic data=0' /tmp/protected-reset.log
+          grep -q 'exactly 18816 active weights' /tmp/protected-reset.log
+          grep -q 'PROTECTED_RESET_EXPERIMENT_COMPLETE' /tmp/protected-reset.log
+          test -s deepmind-p30-int8-protected-reset-output/results.json
+          test -s deepmind-p30-int8-protected-reset-output/SUMMARY.txt
+
+      - name: Print protected reset summary
+        if: always()
+        run: |
+          echo '===== BASELINE vs RESET vs PROTECTED RESET ====='
+          cat deepmind-p30-int8-protected-reset-output/SUMMARY.txt 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 260 /tmp/protected-reset.log 2>/dev/null || true
+
+      - name: Upload protected reset evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepmind-p30-int8-protected-reset-evidence
+          path: |
+            deepmind-p30-int8-protected-reset-output/**
+            /tmp/protected-reset-preflight.log
+            /tmp/protected-reset.log
+          if-no-files-found: warn
+          retention-days: 90
