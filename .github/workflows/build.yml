@@ -15,11 +15,35 @@ jobs:
           java-version: '11'
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --no-daemon --stacktrace --console=plain 2>&1 | tee gradle-test.log
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RSNN-Lab-V2-Test-Diagnostics
+          path: |
+            gradle-test.log
+            app/build/reports/tests/**
+            app/build/test-results/**
+          if-no-files-found: warn
       - name: Build APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
-      - uses: actions/upload-artifact@v4
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain 2>&1 | tee gradle-build.log
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: RSNN-Lab-V2-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RSNN-Lab-V2-Build-Diagnostics
+          path: gradle-build.log
+          if-no-files-found: warn
