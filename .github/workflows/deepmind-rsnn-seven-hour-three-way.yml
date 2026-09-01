@@ -1,0 +1,275 @@
+name: DeepMind RSNN Seven-Hour Three-Way
+
+on:
+  push:
+    branches:
+      - feat/rsnn-seven-hour-three-way
+    paths:
+      - scripts/deepmind_rsnn_seven_hour_three_way.py
+      - .github/workflows/deepmind-rsnn-seven-hour-three-way.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Seven-hour contract preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Static contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/pruned_snn_vs_mlp.py \
+            scripts/deepmind_pruned_snn_stress.py \
+            scripts/deepmind_rsnn_pruning_sweep.py \
+            scripts/deepmind_p30_int8_ablation.py \
+            scripts/deepmind_rsnn_open_ended_three_way.py \
+            scripts/deepmind_rsnn_open_ended_three_way_fixed.py \
+            scripts/deepmind_rsnn_seven_hour_three_way.py
+          grep -q 'PHASE_BUDGET_DEFAULT = 12600.0' scripts/deepmind_rsnn_seven_hour_three_way.py
+          grep -q 'There is no plateau/degradation stop' scripts/deepmind_rsnn_seven_hour_three_way.py
+          grep -q 'best checkpoint' scripts/deepmind_rsnn_seven_hour_three_way.py
+      - name: Model preflight all three
+        run: |
+          set -euo pipefail
+          for V in adopted_p30 open_growth dense_long; do
+            python scripts/deepmind_rsnn_seven_hour_three_way.py --mode preflight --variant "$V"
+          done
+
+  prepare-banks:
+    name: Prepare one shared DeepMind bank set
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build shared fixed banks once
+        run: |
+          set -euo pipefail
+          mkdir -p shared-banks
+          python scripts/deepmind_rsnn_seven_hour_three_way.py \
+            --mode prepare \
+            --banks-file shared-banks/seven-hour-banks.pt | tee /tmp/prepare-banks.log
+          test -s shared-banks/seven-hour-banks.pt
+          test -s shared-banks/seven-hour-banks.fingerprints.json
+          grep -q 'SEVEN_HOUR_SHARED_BANKS_READY' /tmp/prepare-banks.log
+      - name: Upload exact shared banks
+        uses: actions/upload-artifact@v4
+        with:
+          name: seven-hour-fixed-banks
+          path: shared-banks/**
+          retention-days: 2
+
+  stage1:
+    name: Seven-hour phase 1 ${{ matrix.variant }}
+    needs: prepare-banks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [adopted_p30, open_growth, dense_long]
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Download exact shared banks
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-fixed-banks
+          path: shared-banks
+      - name: Train phase 1 for 3.5 hours with no early stop
+        run: |
+          set -euo pipefail
+          mkdir -p stage1-${{ matrix.variant }}
+          python scripts/deepmind_rsnn_seven_hour_three_way.py \
+            --mode stage1 \
+            --variant '${{ matrix.variant }}' \
+            --phase-budget-seconds 12600 \
+            --banks-file shared-banks/seven-hour-banks.pt \
+            --checkpoint-out stage1-${{ matrix.variant }}/checkpoint.pt | tee /tmp/stage1.log
+          grep -q 'SEVEN_HOUR_STAGE1_COMPLETE' /tmp/stage1.log
+          test -s stage1-${{ matrix.variant }}/checkpoint.pt
+      - name: Upload resumable phase-1 checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seven-hour-stage1-${{ matrix.variant }}
+          path: |
+            stage1-${{ matrix.variant }}/checkpoint.pt
+            /tmp/stage1.log
+          if-no-files-found: error
+          retention-days: 2
+
+  stage2:
+    name: Seven-hour phase 2 ${{ matrix.variant }}
+    needs: stage1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [adopted_p30, open_growth, dense_long]
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Download exact shared banks
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-fixed-banks
+          path: shared-banks
+      - name: Download matching phase-1 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-stage1-${{ matrix.variant }}
+          path: resume-${{ matrix.variant }}
+      - name: Train phase 2 for another 3.5 hours and evaluate best checkpoint
+        run: |
+          set -euo pipefail
+          OUT='seven-hour-final-${{ matrix.variant }}'
+          python scripts/deepmind_rsnn_seven_hour_three_way.py \
+            --mode stage2 \
+            --variant '${{ matrix.variant }}' \
+            --phase-budget-seconds 12600 \
+            --banks-file shared-banks/seven-hour-banks.pt \
+            --resume-checkpoint resume-${{ matrix.variant }}/checkpoint.pt \
+            --output-dir "$OUT" | tee /tmp/stage2.log
+          grep -q 'SEVEN_HOUR_VARIANT_COMPLETE' /tmp/stage2.log
+          test -s "$OUT/results.json"
+          test -s "$OUT/SUMMARY.txt"
+          test -s "$OUT/best_model_state.pt"
+      - name: Print final detailed result
+        if: always()
+        run: |
+          OUT='seven-hour-final-${{ matrix.variant }}'
+          echo '===== SEVEN-HOUR FINAL RESULT ====='
+          cat "$OUT/SUMMARY.txt" 2>/dev/null || true
+          echo '===== LAST TRAINING LINES ====='
+          tail -n 200 /tmp/stage2.log 2>/dev/null || true
+      - name: Upload full final evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seven-hour-final-${{ matrix.variant }}
+          path: |
+            seven-hour-final-${{ matrix.variant }}/**
+            /tmp/stage2.log
+          if-no-files-found: error
+          retention-days: 90
+
+  compare:
+    name: Build seven-hour three-way comparison
+    needs: stage2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Download adopted P30 result
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-final-adopted_p30
+          path: results/adopted_p30
+      - name: Download open-growth result
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-final-open_growth
+          path: results/open_growth
+      - name: Download dense-long result
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-final-dense_long
+          path: results/dense_long
+      - name: Produce comparison and verify same banks
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          variants=['adopted_p30','open_growth','dense_long']
+          data={}
+          for v in variants:
+              p=Path('results')/v/f'seven-hour-final-{v}'/'results.json'
+              data[v]=json.loads(p.read_text())
+          fp=[data[v]['bank_fingerprints'] for v in variants]
+          same=(fp[0]==fp[1]==fp[2])
+          if not same:
+              raise SystemExit('BANK_FINGERPRINT_MISMATCH')
+          rows=[]
+          for v in variants:
+              r=data[v]; m=r['evaluations']['OFFICIAL_INTERPOLATE']
+              rows.append((v,r['selected_validation_mae'],m['mae'],100*m['strict_1_0'],100*m['within_5_0'],r['active_weights_selected'],r['stream_cycles'],r['examples_seen_with_repeats'],r['selected_checkpoint_kind']))
+          rows.sort(key=lambda x:x[2])
+          lines=['# Seven-hour RSNN three-way comparison','',f'Same fixed-bank fingerprints: **{same}**','',
+                 '| Rank | Variant | Val MAE | Official MAE | Strict<=1 | Within5 | Active | Cycles | Examples seen | Selected checkpoint |',
+                 '|---:|---|---:|---:|---:|---:|---:|---:|---:|---|']
+          for i,x in enumerate(rows,1):
+              lines.append(f'| {i} | {x[0]} | {x[1]:.8f} | {x[2]:.8f} | {x[3]:.4f}% | {x[4]:.4f}% | {x[5]} | {x[6]} | {x[7]} | {x[8]} |')
+          lines += ['', '## Full-bank metrics']
+          for v in variants:
+              lines += ['', f'### {v}']
+              for bank,m in data[v]['evaluations'].items():
+                  lines.append(f"- {bank}: MAE={m['mae']:.8f}, RMSE={m['rmse']:.8f}, strict1={100*m['strict_1_0']:.4f}%, within5={100*m['within_5_0']:.4f}%, residual={m['equation_residual_mean']:.8f}")
+          Path('SEVEN_HOUR_COMPARISON.md').write_text('\n'.join(lines)+'\n')
+          Path('SEVEN_HOUR_COMPARISON.json').write_text(json.dumps({'same_bank_fingerprints':same,'ranking_by_official_mae':[x[0] for x in rows],'variants':data},indent=2,sort_keys=True))
+          print('\n'.join(lines))
+          PY
+      - name: Upload combined comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: seven-hour-three-way-comparison
+          path: |
+            SEVEN_HOUR_COMPARISON.md
+            SEVEN_HOUR_COMPARISON.json
+          retention-days: 90
