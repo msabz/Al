@@ -1,10 +1,11 @@
-name: DeepMind RSNN Seven-Hour Three-Way
+name: DeepMind RSNN Seven-Hour Three-Way V2
 
 on:
   push:
     branches:
-      - feat/rsnn-seven-hour-three-way
+      - feat/rsnn-seven-hour-growth-v2
     paths:
+      - scripts/deepmind_rsnn_open_ended_three_way_fixed.py
       - scripts/deepmind_rsnn_seven_hour_three_way.py
       - .github/workflows/deepmind-rsnn-seven-hour-three-way.yml
   workflow_dispatch:
@@ -14,7 +15,7 @@ permissions:
 
 jobs:
   preflight:
-    name: Seven-hour contract preflight
+    name: Seven-hour V2 contract preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -43,7 +44,9 @@ jobs:
             scripts/deepmind_rsnn_seven_hour_three_way.py
           grep -q 'PHASE_BUDGET_DEFAULT = 12600.0' scripts/deepmind_rsnn_seven_hour_three_way.py
           grep -q 'There is no plateau/degradation stop' scripts/deepmind_rsnn_seven_hour_three_way.py
-          grep -q 'best checkpoint' scripts/deepmind_rsnn_seven_hour_three_way.py
+          grep -q 'ROLLING CORE FIX' scripts/deepmind_rsnn_open_ended_three_way_fixed.py
+          grep -q 'current global best 2%' scripts/deepmind_rsnn_open_ended_three_way_fixed.py
+          echo SEVEN_HOUR_V2_STATIC_PASS
       - name: Model preflight all three
         run: |
           set -euo pipefail
@@ -82,12 +85,12 @@ jobs:
       - name: Upload exact shared banks
         uses: actions/upload-artifact@v4
         with:
-          name: seven-hour-fixed-banks
-          path: shared-banks/**
+          name: seven-hour-v2-fixed-banks
+          path: shared-banks
           retention-days: 2
 
   stage1:
-    name: Seven-hour phase 1 ${{ matrix.variant }}
+    name: Seven-hour V2 phase 1 ${{ matrix.variant }}
     needs: prepare-banks
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -115,33 +118,32 @@ jobs:
       - name: Download exact shared banks
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-fixed-banks
+          name: seven-hour-v2-fixed-banks
           path: shared-banks
       - name: Train phase 1 for 3.5 hours with no early stop
         run: |
           set -euo pipefail
-          mkdir -p stage1-${{ matrix.variant }}
+          DIR='stage1-${{ matrix.variant }}'
+          mkdir -p "$DIR"
           python scripts/deepmind_rsnn_seven_hour_three_way.py \
             --mode stage1 \
             --variant '${{ matrix.variant }}' \
             --phase-budget-seconds 12600 \
             --banks-file shared-banks/seven-hour-banks.pt \
-            --checkpoint-out stage1-${{ matrix.variant }}/checkpoint.pt | tee /tmp/stage1.log
+            --checkpoint-out "$DIR/checkpoint.pt" | tee /tmp/stage1.log
           grep -q 'SEVEN_HOUR_STAGE1_COMPLETE' /tmp/stage1.log
-          test -s stage1-${{ matrix.variant }}/checkpoint.pt
+          test -s "$DIR/checkpoint.pt"
+          cp /tmp/stage1.log "$DIR/stage1.log"
       - name: Upload resumable phase-1 checkpoint
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: seven-hour-stage1-${{ matrix.variant }}
-          path: |
-            stage1-${{ matrix.variant }}/checkpoint.pt
-            /tmp/stage1.log
+          name: seven-hour-v2-stage1-${{ matrix.variant }}
+          path: stage1-${{ matrix.variant }}
           if-no-files-found: error
           retention-days: 2
 
   stage2:
-    name: Seven-hour phase 2 ${{ matrix.variant }}
+    name: Seven-hour V2 phase 2 ${{ matrix.variant }}
     needs: stage1
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -169,17 +171,22 @@ jobs:
       - name: Download exact shared banks
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-fixed-banks
+          name: seven-hour-v2-fixed-banks
           path: shared-banks
       - name: Download matching phase-1 checkpoint
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-stage1-${{ matrix.variant }}
+          name: seven-hour-v2-stage1-${{ matrix.variant }}
           path: resume-${{ matrix.variant }}
+      - name: Verify resume checkpoint path
+        run: |
+          set -euo pipefail
+          test -s resume-${{ matrix.variant }}/checkpoint.pt
+          echo RESUME_CHECKPOINT_OK
       - name: Train phase 2 for another 3.5 hours and evaluate best checkpoint
         run: |
           set -euo pipefail
-          OUT='seven-hour-final-${{ matrix.variant }}'
+          OUT='seven-hour-v2-final-${{ matrix.variant }}'
           python scripts/deepmind_rsnn_seven_hour_three_way.py \
             --mode stage2 \
             --variant '${{ matrix.variant }}' \
@@ -191,27 +198,26 @@ jobs:
           test -s "$OUT/results.json"
           test -s "$OUT/SUMMARY.txt"
           test -s "$OUT/best_model_state.pt"
+          cp /tmp/stage2.log "$OUT/stage2.log"
       - name: Print final detailed result
         if: always()
         run: |
-          OUT='seven-hour-final-${{ matrix.variant }}'
-          echo '===== SEVEN-HOUR FINAL RESULT ====='
+          OUT='seven-hour-v2-final-${{ matrix.variant }}'
+          echo '===== SEVEN-HOUR V2 FINAL RESULT ====='
           cat "$OUT/SUMMARY.txt" 2>/dev/null || true
           echo '===== LAST TRAINING LINES ====='
           tail -n 200 /tmp/stage2.log 2>/dev/null || true
       - name: Upload full final evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: seven-hour-final-${{ matrix.variant }}
-          path: |
-            seven-hour-final-${{ matrix.variant }}/**
-            /tmp/stage2.log
+          name: seven-hour-v2-final-${{ matrix.variant }}
+          path: seven-hour-v2-final-${{ matrix.variant }}
           if-no-files-found: error
           retention-days: 90
 
   compare:
-    name: Build seven-hour three-way comparison
+    name: Build seven-hour V2 three-way comparison
     needs: stage2
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -219,17 +225,17 @@ jobs:
       - name: Download adopted P30 result
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-final-adopted_p30
+          name: seven-hour-v2-final-adopted_p30
           path: results/adopted_p30
       - name: Download open-growth result
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-final-open_growth
+          name: seven-hour-v2-final-open_growth
           path: results/open_growth
       - name: Download dense-long result
         uses: actions/download-artifact@v4
         with:
-          name: seven-hour-final-dense_long
+          name: seven-hour-v2-final-dense_long
           path: results/dense_long
       - name: Produce comparison and verify same banks
         run: |
@@ -240,7 +246,7 @@ jobs:
           variants=['adopted_p30','open_growth','dense_long']
           data={}
           for v in variants:
-              p=Path('results')/v/f'seven-hour-final-{v}'/'results.json'
+              p=Path('results')/v/'results.json'
               data[v]=json.loads(p.read_text())
           fp=[data[v]['bank_fingerprints'] for v in variants]
           same=(fp[0]==fp[1]==fp[2])
@@ -249,27 +255,27 @@ jobs:
           rows=[]
           for v in variants:
               r=data[v]; m=r['evaluations']['OFFICIAL_INTERPOLATE']
-              rows.append((v,r['selected_validation_mae'],m['mae'],100*m['strict_1_0'],100*m['within_5_0'],r['active_weights_selected'],r['stream_cycles'],r['examples_seen_with_repeats'],r['selected_checkpoint_kind']))
+              rows.append((v,r['selected_validation_mae'],m['mae'],100*m['strict_1_0'],100*m['within_5_0'],r['active_weights_selected'],r['protected_total_selected'],r['stream_cycles'],r['examples_seen_with_repeats'],r['selected_checkpoint_kind']))
           rows.sort(key=lambda x:x[2])
-          lines=['# Seven-hour RSNN three-way comparison','',f'Same fixed-bank fingerprints: **{same}**','',
-                 '| Rank | Variant | Val MAE | Official MAE | Strict<=1 | Within5 | Active | Cycles | Examples seen | Selected checkpoint |',
-                 '|---:|---|---:|---:|---:|---:|---:|---:|---:|---|']
+          lines=['# Seven-hour RSNN three-way comparison V2','',f'Same fixed-bank fingerprints: **{same}**','',
+                 '| Rank | Variant | Val MAE | Official MAE | Strict<=1 | Within5 | Active | Protected | Cycles | Examples seen | Selected checkpoint |',
+                 '|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|']
           for i,x in enumerate(rows,1):
-              lines.append(f'| {i} | {x[0]} | {x[1]:.8f} | {x[2]:.8f} | {x[3]:.4f}% | {x[4]:.4f}% | {x[5]} | {x[6]} | {x[7]} | {x[8]} |')
+              lines.append(f'| {i} | {x[0]} | {x[1]:.8f} | {x[2]:.8f} | {x[3]:.4f}% | {x[4]:.4f}% | {x[5]} | {x[6]} | {x[7]} | {x[8]} | {x[9]} |')
           lines += ['', '## Full-bank metrics']
           for v in variants:
               lines += ['', f'### {v}']
               for bank,m in data[v]['evaluations'].items():
                   lines.append(f"- {bank}: MAE={m['mae']:.8f}, RMSE={m['rmse']:.8f}, strict1={100*m['strict_1_0']:.4f}%, within5={100*m['within_5_0']:.4f}%, residual={m['equation_residual_mean']:.8f}")
-          Path('SEVEN_HOUR_COMPARISON.md').write_text('\n'.join(lines)+'\n')
-          Path('SEVEN_HOUR_COMPARISON.json').write_text(json.dumps({'same_bank_fingerprints':same,'ranking_by_official_mae':[x[0] for x in rows],'variants':data},indent=2,sort_keys=True))
+          Path('SEVEN_HOUR_V2_COMPARISON.md').write_text('\n'.join(lines)+'\n')
+          Path('SEVEN_HOUR_V2_COMPARISON.json').write_text(json.dumps({'same_bank_fingerprints':same,'ranking_by_official_mae':[x[0] for x in rows],'variants':data},indent=2,sort_keys=True))
           print('\n'.join(lines))
           PY
       - name: Upload combined comparison
         uses: actions/upload-artifact@v4
         with:
-          name: seven-hour-three-way-comparison
+          name: seven-hour-v2-three-way-comparison
           path: |
-            SEVEN_HOUR_COMPARISON.md
-            SEVEN_HOUR_COMPARISON.json
+            SEVEN_HOUR_V2_COMPARISON.md
+            SEVEN_HOUR_V2_COMPARISON.json
           retention-days: 90
