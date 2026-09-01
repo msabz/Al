@@ -1,16 +1,6 @@
 name: DeepMind RSNN Open-Ended Three-Way
 
 on:
-  push:
-    branches:
-      - feat/rsnn-open-ended-three-way
-    paths:
-      - scripts/pruned_snn_vs_mlp.py
-      - scripts/deepmind_pruned_snn_stress.py
-      - scripts/deepmind_rsnn_pruning_sweep.py
-      - scripts/deepmind_p30_int8_ablation.py
-      - scripts/deepmind_rsnn_open_ended_three_way.py
-      - .github/workflows/deepmind-rsnn-open-ended-three-way.yml
   workflow_dispatch:
 
 permissions:
