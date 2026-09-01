@@ -1,82 +1,28 @@
 package com.example.equationsolver
 
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
-import android.widget.Button
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import com.example.equationsolver.ai.ModelManager
-import com.example.equationsolver.ai.TrainingEngine
-import com.example.equationsolver.ai.TrainingService
+import com.example.equationsolver.ai.ModelStore
+import com.example.equationsolver.ui.*
 import java.util.Locale
-import kotlin.math.max
-import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
-    private var resumeError: String? = null
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        findViewById<Button>(R.id.btnGoTest).setOnClickListener { startActivity(Intent(this, TestActivity::class.java)) }
-        findViewById<Button>(R.id.btnGoTrain).setOnClickListener { startActivity(Intent(this, TrainingActivity::class.java)) }
-        findViewById<Button>(R.id.btnGoReinforcement).setOnClickListener { startActivity(Intent(this, ReinforcementActivity::class.java)) }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        ModelManager.init(applicationContext)
-        resumeTrainingIfRequested()
-        renderDashboard()
-    }
-
-    private fun resumeTrainingIfRequested() {
-        resumeError = null
-        if (!ModelManager.isTrainingEnabled(this)) return
-        val intent = Intent(this, TrainingService::class.java).setAction(TrainingService.ACTION_START)
-        resumeError = try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, intent)
-            else startService(intent)
-            null
-        } catch (e: Exception) {
-            e.message ?: "رفض Android تشغيل خدمة التدريب"
-        }
-    }
-
-    private fun renderDashboard() {
-        val snapshot = TrainingEngine.snapshot()
-        val samples = max(ModelManager.trainingSamples(this), snapshot.samples)
-        val storedMse = ModelManager.lastValidationMse(this)
-        val validation = snapshot.validation
-        val mse = if (validation.normalizedMse.isFinite()) validation.normalizedMse else storedMse
-        val accuracy = if (validation.withinOneUnitRatio.isFinite()) {
-            validation.withinOneUnitRatio
-        } else {
-            ModelManager.lastValidationAccuracy(this)
-        }
-        val info = ModelManager.modelInfo(this)
-
-        findViewById<TextView>(R.id.textMainSamples).text = "%,d".format(Locale.US, samples)
-        findViewById<TextView>(R.id.textMainRmse).text = if (mse.isFinite()) "%.2f".format(Locale.US, sqrt(mse) * TrainingEngine.OUTPUT_SCALE) else "—"
-        findViewById<TextView>(R.id.textMainAccuracy).text = if (accuracy.isFinite()) "%.0f%%".format(Locale.US, accuracy * 100.0) else "—"
-        findViewById<TextView>(R.id.textTrainingState).text = when {
-            resumeError != null -> "تعذر استئناف الخدمة: $resumeError"
-            snapshot.paused -> "متوقف مؤقتًا لحماية الهاتف: ${snapshot.reason}"
-            TrainingEngine.isExternalFileSessionActive() -> "● تدريب ملف خارجي يعمل الآن"
-            ModelManager.isTrainingEnabled(this) -> "● التدريب العصبي يعمل في الخلفية"
-            samples > 0 -> "النموذج محفوظ وجاهز للمتابعة"
-            else -> "نموذج جديد — ابدأ أول جلسة تدريب"
-        }
-        val checkpoint = if (info.checkpointBytes > 0L) "%.1f MB".format(Locale.US, info.checkpointBytes / 1_048_576.0) else "غير محفوظ بعد"
-        findViewById<TextView>(R.id.textModelDetails).text =
-            "%,d معامل قابل للتعلم • %,d خطوة Adam\nCheckpoint: %s%s".format(
-                Locale.US,
-                info.parameterCount,
-                info.optimizerStep,
-                checkpoint,
-                if (info.hasRecoveryBackup) " • نسخة استرجاع موجودة" else ""
-            )
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); ModelStore.init(this); render() }
+    override fun onResume(){super.onResume();render()}
+    private fun render(){
+        val root=screen("RSNN Lab V2","Open-Growth • Full INT8 inference • DeepMind-only training")
+        val c=root.card();val m=ModelStore.model;val cfg=ModelStore.config;val core=m.coreSnapshot()
+        c.label("${cfg.hiddenDim} عصبون • T=${cfg.timeSteps} • INT8", ACCENT,17f)
+        c.label("Active: %,d / %,d   •   Protected: %,d".format(Locale.US,core.active,core.active+core.dormant,core.protected))
+        c.label("Phase: ${core.phase}   •   Step: ${core.step}   •   Grad: %.4f".format(Locale.US,core.gradientNorm))
+        c.label(if(ModelStore.trainingEnabled())"● التدريب يعمل في الخلفية" else "التدريب متوقف")
+        root.button("تدريب DeepMind",true){startActivity(Intent(this,TrainingActivity::class.java))}
+        root.button("اختبار النموذج"){startActivity(Intent(this,TestActivity::class.java))}
+        root.button("قلب النموذج — Live Core"){startActivity(Intent(this,CoreActivity::class.java))}
+        root.button("إعدادات النموذج — Expert"){startActivity(Intent(this,SettingsActivity::class.java))}
+        root.button("Model Vault — Google Drive"){startActivity(Intent(this,VaultActivity::class.java))}
+        root.button("استيراد أوزان / Checkpoint"){startActivity(Intent(this,WeightsActivity::class.java))}
+        val d=root.card();d.label("مصدر التدريب",SKY,16f);d.label("لا يوجد مولّد بيانات داخلي. التطبيق يقبل فقط ملفات algebra.linear_2d المصدّرة من Google DeepMind mathematics_dataset عند commit المثبّت.")
     }
 }
