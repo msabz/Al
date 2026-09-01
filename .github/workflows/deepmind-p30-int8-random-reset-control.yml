@@ -1,0 +1,101 @@
+name: DeepMind P30 INT8 Random Reset Control
+
+on:
+  push:
+    branches:
+      - feat/p30-int8-random-reset-control
+    paths:
+      - scripts/pruned_snn_vs_mlp.py
+      - scripts/deepmind_pruned_snn_stress.py
+      - scripts/deepmind_rsnn_pruning_sweep.py
+      - scripts/deepmind_p30_int8_ablation.py
+      - scripts/deepmind_p30_int8_protected_reset_ablation.py
+      - scripts/deepmind_p30_int8_random_reset_control.py
+      - .github/workflows/deepmind-p30-int8-random-reset-control.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  random-reset-control:
+    name: Baseline vs random vs selective vs protected reset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/pruned_snn_vs_mlp.py \
+            scripts/deepmind_pruned_snn_stress.py \
+            scripts/deepmind_rsnn_pruning_sweep.py \
+            scripts/deepmind_p30_int8_ablation.py \
+            scripts/deepmind_p30_int8_protected_reset_ablation.py \
+            scripts/deepmind_p30_int8_random_reset_control.py
+          grep -q 'P30_INT8_QAT_RANDOM_RESET' scripts/deepmind_p30_int8_random_reset_control.py
+          grep -q 'RANDOM_RESET_CONTROL_FAIRNESS' scripts/deepmind_p30_int8_random_reset_control.py
+          grep -q 'RESET_FRACTION' scripts/deepmind_p30_int8_random_reset_control.py
+          echo 'RANDOM_RESET_STATIC_CONTRACT_PASS'
+
+      - name: Preflight random reset topology preservation
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_p30_int8_random_reset_control.py --preflight | tee /tmp/random-reset-preflight.log
+          grep -q 'RANDOM_RESET_CONTROL_PREFLIGHT_PASS' /tmp/random-reset-preflight.log
+
+      - name: Run exact 5-seed DeepMind random-reset control
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_p30_int8_random_reset_control.py \
+            --train-size 8192 \
+            --eval-size 2048 \
+            --ill-pool-size 4096 \
+            --ill-size 1024 \
+            --epochs 300 \
+            --batch-size 256 \
+            --seeds 11,22,33,44,55 \
+            --output-dir deepmind-p30-int8-random-reset-control-output | tee /tmp/random-reset-control.log
+          grep -q 'project synthetic data=0' /tmp/random-reset-control.log
+          grep -q 'RANDOM_RESET_CONTROL_COMPLETE' /tmp/random-reset-control.log
+          test -s deepmind-p30-int8-random-reset-control-output/results.json
+          test -s deepmind-p30-int8-random-reset-control-output/SUMMARY.txt
+
+      - name: Print random reset control summary
+        if: always()
+        run: |
+          echo '===== RANDOM RESET CONTROL SUMMARY ====='
+          cat deepmind-p30-int8-random-reset-control-output/SUMMARY.txt 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 260 /tmp/random-reset-control.log 2>/dev/null || true
+
+      - name: Upload random reset control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepmind-p30-int8-random-reset-control-evidence
+          path: |
+            deepmind-p30-int8-random-reset-control-output/**
+            /tmp/random-reset-preflight.log
+            /tmp/random-reset-control.log
+          if-no-files-found: warn
+          retention-days: 90
