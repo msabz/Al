@@ -1,78 +1,19 @@
-# Math AI Lab v4
+# RSNN Lab V2 Android
 
-تطبيق Android يدرّب نموذجًا عصبيًا حقيقيًا محليًا على مسائل المعادلات الرياضية، من دون مكتبات تعلم آلي ومن دون خادم أو اتصال بالإنترنت. صُمّم ملف التشغيل الافتراضي للتدريب المستمر على Samsung Galaxy A16 مع حماية البطارية والحرارة.
+Android on-device lab for **Open-Growth RSNN V2**.
 
-## ما الذي يجعل التدريب حقيقيًا؟
+- QAT training with FP32 master state and fake INT8 forward quantization.
+- Full integer-only INT8 inference path: INT8 weights/input/membrane/spikes with INT32 accumulators.
+- No in-app synthetic equation generator. Training accepts only app-exported `algebra.linear_2d` files produced from pinned official Google DeepMind `mathematics_dataset` commit `427f45075f84b8b9774950196ad63867ca20ffb3`.
+- Expert Model Control screen for architecture, training, growth, quantization and runtime parameters.
+- Live Model Core screen for spikes, membrane activity, active/dormant/protected counts, growth/pruning events, INT8 saturation and gradient state.
+- External model/weights import by content signature rather than extension.
+- Google Drive Model Vault via Android Storage Access Framework: choose a Drive folder and back up/restore versioned checkpoints.
+- No teacher/student distillation code.
 
-- `ModelManager.predict()` يستدعي الـ tokenizer ثم أوزان `NeuralNetwork` فقط.
-- كل دفعة تنفّذ forward pass ثم backpropagation وتحديث Adam للأوزان وembeddings والانحيازات.
-- اختبار الوحدة `NeuralNetworkTest` يثبت أن التنبؤ يتغير وأن الخسارة تنخفض بعد تحديثات gradients.
-- الحل الرياضي المرجعي لا يدخل مسار تنبؤ النموذج؛ يُستخدم لبناء أهداف صحيحة ولعرض مقارنة منفصلة فقط.
-- يحفظ الـ checkpoint الأوزان، embeddings، لحظات Adam، وعدد خطوات optimizer، ثم يستأنف منها بدل البدء من الصفر.
-
-## بنية النموذج
-
-- Tokenizer رياضي موضعي: حتى 72 token
-- Embedding متعلّم: 24 بعدًا
-- Dense neural layers: `128 → 128 → 64 → 2`
-- الخرج العددي: `[x, y]`
-- 247,026 معاملًا قابلًا للتعلم
-- Adam مع global gradient clipping
-- Batch بحجم 16 لتقليل ضغط الذاكرة والـ GC على A16
-
-النموذج ينتج جذرًا رئيسيًا واحدًا ثابتًا عندما يكون للمعادلة عدة جذور حقيقية. هذا قيد مقصود للخرج العددي الثابت، وليس ادعاءً بأن النموذج الصغير يمثّل كل حلول كل فروع الرياضيات.
-
-## المنهج اللامتناهي
-
-يولّد التطبيق أمثلة جديدة حتى يوقفه المستخدم، ويتحقق من كل هدف بالتعويض قبل التدريب:
-
-- معادلات خطية بصيغ طرف واحد، طرفين، وأقواس، في `x` أو `y`
-- أنظمة خطية `2×2`
-- كثيرات حدود موسّعة أو محللة حتى الدرجة الخامسة
-- معادلات كسرية وجذرية
-- أسية بـ `exp(...)` أو `a^x`
-- لوغاريتمية بـ `ln(...)` و`log(...)`
-- قيمة مطلقة
-- مثلثية بـ `sin` و`cos` و`tan`
-
-الهندسة غير داخلة في المنهج. المعادلات غير الخطية متعددة المتغيرات والخرج الذي يحتاج عددًا متغيرًا من الجذور ليست ضمن عقد النموذج الحالي.
-
-## قياس الجودة بلا تضليل
-
-- توجد مجموعة holdout ثابتة من 160 مثالًا مولدة ببذرة ثابتة.
-- هذه المعادلات مستبعدة صراحة من التدريب المستمر.
-- تعرض الشاشة Train MSE، وHoldout RMSE بوحدة الحل الفعلية، ومتوسط الخطأ، ونسبة القيم التي خطؤها لا يتجاوز ±1.
-- لا تُستخدم خسارة دفعة عشوائية متغيرة وحدها للحكم على تحسن النموذج.
-
-## ضبط Samsung A16
-
-- foreground service مستقل عن الشاشات مع partial wake lock
-- تأخير متكيف: أسرع أثناء الشحن وأهدأ على البطارية
-- توقف تلقائي عند حرارة `MODERATE` أو أعلى
-- توقف تلقائي عند بطارية 20% أو أقل
-- تخفيف إضافي في وضع توفير الطاقة أو الحرارة الخفيفة
-- checkpoint كل خمس دقائق، وعند الإيقاف، ومع نسخة استرجاع سابقة
-- إعادة تشغيل التدريب بعد الإقلاع فقط إذا كان المستخدم قد تركه مفعّلًا
-
-Android Force stop يوقف التطبيق والخدمة بحكم النظام، ولا يمكن لأي تطبيق عادي تجاوز ذلك.
-
-## التدريب من ملف
-
-صيغة السطر:
-
-```text
-2x+4=10 | 3,0
-2x+3y=5;x-y=1 | 1.6,0.6
-sin(x)=0.47942554 | 0.5,0
-```
-
-يمكن حذف الجزء بعد `|` ليحسب المصحح الهدف المدعوم. السطر ذو الهدف غير المحدود أو الذي لا يحقق المعادلة يُرفض قبل دخوله التدريب. تُقرأ الملفات الكبيرة على دفعات من 2,000 سطر بدل تحميلها كاملة في RAM.
-
-## البناء
+Generate DeepMind files:
 
 ```bash
-./gradlew testDebugUnitTest
-./gradlew assembleDebug
+python scripts/export_deepmind_linear2d.py --split train --count 50000 --out deepmind_train.dmd
+python scripts/export_deepmind_linear2d.py --split interpolate --count 5000 --out deepmind_validation.dmd
 ```
-
-يرفع GitHub Actions ملف `EquationSolver-APK` بعد نجاح الاختبارات والبناء.
