@@ -1,0 +1,93 @@
+name: DeepMind RSNN Open-Growth Fixed
+
+on:
+  push:
+    branches:
+      - feat/rsnn-open-ended-three-way
+    paths:
+      - scripts/deepmind_rsnn_open_ended_three_way_fixed.py
+      - .github/workflows/deepmind-rsnn-open-growth-fixed.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  open-growth-fixed:
+    name: Open-ended open_growth fixed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 245
+    env:
+      OMP_NUM_THREADS: 4
+      MKL_NUM_THREADS: 4
+      PYTHONHASHSEED: '0'
+
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy sympy absl-py six
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Static hotfix contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/pruned_snn_vs_mlp.py \
+            scripts/deepmind_pruned_snn_stress.py \
+            scripts/deepmind_rsnn_pruning_sweep.py \
+            scripts/deepmind_p30_int8_ablation.py \
+            scripts/deepmind_rsnn_open_ended_three_way.py \
+            scripts/deepmind_rsnn_open_ended_three_way_fixed.py
+          grep -q 'all permanent Parameter/mask/optimizer-state mutations are no-grad' scripts/deepmind_rsnn_open_ended_three_way_fixed.py
+          echo OPEN_GROWTH_HOTFIX_STATIC_PASS
+
+      - name: Preflight fixed open-growth contract
+        run: |
+          set -euo pipefail
+          python scripts/deepmind_rsnn_open_ended_three_way_fixed.py \
+            --variant open_growth --preflight | tee /tmp/preflight.log
+          grep -q 'OPEN_ENDED_PREFLIGHT_PASS' /tmp/preflight.log
+
+      - name: Run fixed open-growth training
+        run: |
+          set -euo pipefail
+          OUT='rsnn-open-ended-open_growth-fixed'
+          python scripts/deepmind_rsnn_open_ended_three_way_fixed.py \
+            --variant open_growth \
+            --train-budget-seconds 13200 \
+            --output-dir "$OUT" | tee /tmp/open-growth-fixed.log
+          grep -q 'OPEN_ENDED_VARIANT_COMPLETE' /tmp/open-growth-fixed.log
+          test -s "$OUT/results.json"
+          test -s "$OUT/SUMMARY.txt"
+          test -s "$OUT/bank_fingerprints.json"
+
+      - name: Print fixed open-growth summary
+        if: always()
+        run: |
+          OUT='rsnn-open-ended-open_growth-fixed'
+          echo '===== FIXED OPEN-GROWTH SUMMARY ====='
+          cat "$OUT/SUMMARY.txt" 2>/dev/null || true
+          echo '===== LAST LOG LINES ====='
+          tail -n 240 /tmp/open-growth-fixed.log 2>/dev/null || true
+
+      - name: Upload fixed open-growth evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsnn-open-ended-open_growth-fixed-evidence
+          path: |
+            rsnn-open-ended-open_growth-fixed/**
+            /tmp/preflight.log
+            /tmp/open-growth-fixed.log
+          if-no-files-found: warn
+          retention-days: 90
