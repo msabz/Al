@@ -2,40 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <application
-        android:name=".EquationSolverApp"
-        android:allowBackup="true"
-        android:icon="@drawable/ic_math_lab"
-        android:label="@string/app_name"
-        android:roundIcon="@drawable/ic_math_lab"
-        android:supportsRtl="true"
-        android:theme="@style/AppTheme">
-        <service
-            android:name=".ai.TrainingService"
-            android:exported="false"
-            android:stopWithTask="false" />
-        <receiver
-            android:name=".ai.TrainingStopReceiver"
-            android:exported="false" />
-        <receiver
-            android:name=".ai.TrainingBootReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-        <activity android:name=".ReinforcementActivity" />
+    <application android:name=".EquationSolverApp" android:allowBackup="true" android:icon="@drawable/ic_math_lab" android:label="RSNN Lab V2" android:roundIcon="@drawable/ic_math_lab" android:supportsRtl="true" android:theme="@style/AppTheme">
+        <service android:name=".TrainingService" android:exported="false" android:stopWithTask="false" />
+        <activity android:name=".WeightsActivity" />
+        <activity android:name=".VaultActivity" />
+        <activity android:name=".CoreActivity" />
+        <activity android:name=".SettingsActivity" />
         <activity android:name=".TestActivity" />
         <activity android:name=".TrainingActivity" />
         <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
     </application>
 </manifest>
