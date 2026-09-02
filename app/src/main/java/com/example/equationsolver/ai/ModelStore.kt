@@ -11,16 +11,34 @@ object ModelStore {
     private const val MODEL_MAGIC = 0x4D4F4456
     private const val WEIGHTS_MAGIC = 0x57544733
     private const val WRAPPER_VERSION = 1
-    private const val FILE_NAME = "open_growth_rsnn_v2.chk"
+    // This build is intentionally pinned to the already-trained stage-1 model.
+    // A new filename prevents an older installed random checkpoint from taking precedence.
+    private const val FILE_NAME = "open_growth_stage1_pretrained_resume.chk"
+    private const val BUNDLED_ASSET = "pretrained_open_growth_stage1.chk"
+
     @Volatile lateinit var model: OpenGrowthRsnnV2; private set
     @Volatile var config: ModelConfig = ModelConfig(); private set
     private lateinit var app: Context
+
     @Synchronized fun init(context: Context) {
         if (::app.isInitialized) return
         app = context.applicationContext
-        config = runCatching { ModelConfig.fromJson(app.getSharedPreferences(PREFS,0).getString(KEY_CONFIG,null) ?: "{}") }.getOrDefault(ModelConfig())
-        model = runCatching { loadCheckpoint(File(app.filesDir, FILE_NAME)) }.getOrElse { OpenGrowthRsnnV2(config) }
+        val checkpoint = File(app.filesDir, FILE_NAME)
+        if (!checkpoint.exists()) installBundledCheckpoint(checkpoint)
+        // Important: never silently create a fresh random model in this build.
+        model = loadCheckpoint(checkpoint)
+        persist()
     }
+
+    private fun installBundledCheckpoint(file: File) {
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        app.assets.open(BUNDLED_ASSET).use { src ->
+            BufferedOutputStream(FileOutputStream(tmp)).use { dst -> src.copyTo(dst) }
+        }
+        if (file.exists()) file.delete()
+        require(tmp.renameTo(file)) { "تعذر تثبيت النموذج المدرب داخل التطبيق" }
+    }
+
     @Synchronized fun applyConfig(newConfig: ModelConfig, rebuildIfNeeded: Boolean) {
         val c = newConfig.normalized()
         if (!config.architectureCompatible(c)) {
@@ -29,14 +47,17 @@ object ModelStore {
         } else { config = c; model.updateRuntimeConfig(c) }
         app.getSharedPreferences(PREFS,0).edit().putString(KEY_CONFIG,c.toJson()).apply(); saveCheckpoint()
     }
+
     @Synchronized fun saveCheckpoint(file: File = File(app.filesDir, FILE_NAME)): File {
         val tmp = File(file.parentFile, file.name+".tmp")
         DataOutputStream(BufferedOutputStream(FileOutputStream(tmp))).use { out -> out.writeInt(MODEL_MAGIC);out.writeInt(WRAPPER_VERSION);out.writeUTF(config.toJson());model.save(out) }
         if(file.exists())file.delete();require(tmp.renameTo(file)){"تعذر تثبيت checkpoint"};return file
     }
+
     @Synchronized fun exportWeights(file: File): File {
         DataOutputStream(BufferedOutputStream(FileOutputStream(file))).use{out->out.writeInt(WEIGHTS_MAGIC);out.writeInt(WRAPPER_VERSION);out.writeUTF(config.toJson());model.exportWeights(out)};return file
     }
+
     @Synchronized fun importExternal(context: Context, uri: Uri): String {
         val resolver=context.contentResolver
         resolver.openInputStream(uri)?.use { raw -> DataInputStream(BufferedInputStream(raw)).use { input ->
@@ -48,6 +69,7 @@ object ModelStore {
             }
         }} ?: error("تعذر فتح ملف الأوزان")
     }
+
     private fun persist(){app.getSharedPreferences(PREFS,0).edit().putString(KEY_CONFIG,config.toJson()).apply()}
     private fun loadCheckpoint(file: File): OpenGrowthRsnnV2 {
         DataInputStream(BufferedInputStream(FileInputStream(file))).use{input->require(input.readInt()==MODEL_MAGIC);require(input.readInt()==WRAPPER_VERSION);val c=ModelConfig.fromJson(input.readUTF());config=c;return OpenGrowthRsnnV2.load(input,c)}
