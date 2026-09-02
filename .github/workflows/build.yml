@@ -42,14 +42,16 @@ jobs:
           CHECKPOINT="$(find pretrained-src -type f -path '*/stage1-open_growth/checkpoint.pt' -print -quit)"
           test -n "$CHECKPOINT"
           test -s "$CHECKPOINT"
-          python scripts/convert_stage1_checkpoint_to_android.py \
-            "$CHECKPOINT" \
-            app/src/main/assets/pretrained_open_growth_stage1.chk \
+          python scripts/export_stage1_checkpoint_for_android.py \
+            --checkpoint "$CHECKPOINT" \
+            --out app/src/main/assets/pretrained_open_growth_stage1.chk \
             --meta app/src/main/assets/pretrained_open_growth_stage1.meta.json
           test -s app/src/main/assets/pretrained_open_growth_stage1.chk
           sha256sum app/src/main/assets/pretrained_open_growth_stage1.chk
-          grep -q '"optimizer_step": 49344' app/src/main/assets/pretrained_open_growth_stage1.meta.json
-          grep -q '"structural_cycle": 1392' app/src/main/assets/pretrained_open_growth_stage1.meta.json
+          echo 'e4bf889fe38f11a9f6eff4b144731443013c60844d91920439f2ebef41c2270e  app/src/main/assets/pretrained_open_growth_stage1.chk' | sha256sum -c -
+          grep -q '"python_optimizer_step": 49344' app/src/main/assets/pretrained_open_growth_stage1.meta.json
+          grep -q '"stream_cycle": 1392' app/src/main/assets/pretrained_open_growth_stage1.meta.json
+          grep -q '"transferred_optimizer_moments": true' app/src/main/assets/pretrained_open_growth_stage1.meta.json
 
       - name: Unit tests
         shell: bash
