@@ -1,1 +1,16 @@
-{"source":"msabz/Al GitHub Actions artifact seven-hour-stage1-open_growth","workflow_run":33473214556,"artifact_id":9793122917,"source_checkpoint":"stage1-open_growth/checkpoint.pt","trained_seconds":12549.10007964,"examples_seen":12632064,"python_optimizer_step":49344,"stream_cycle":1392,"active_weights":25815,"phase":"selection","best_validation_mae":1.1522828340530396,"deepmind_commit":"427f45075f84b8b9774950196ad63867ca20ffb3","android_checkpoint_sha256":"e4bf889fe38f11a9f6eff4b144731443013c60844d91920439f2ebef41c2270e","resume_learning_rate":0.00001,"note":"Bundled checkpoint is the already-trained stage-1 Open-Growth RSNN; it must not be replaced by a freshly initialized model."}
+{
+  "active_weights": 25815,
+  "android_checkpoint_sha256": "e4bf889fe38f11a9f6eff4b144731443013c60844d91920439f2ebef41c2270e",
+  "best_validation_mae": 1.1522828340530396,
+  "deepmind_commit": "427f45075f84b8b9774950196ad63867ca20ffb3",
+  "examples_seen": 12632064,
+  "phase": "selection",
+  "python_optimizer_step": 49344,
+  "resume_learning_rate": 1e-05,
+  "source": "msabz/Al GitHub Actions artifact seven-hour-stage1-open_growth",
+  "source_checkpoint": "/tmp/stage1/home/runner/work/Al/Al/stage1-open_growth/checkpoint.pt",
+  "stream_cycle": 1392,
+  "topology_stable": false,
+  "trained_seconds": 12549.10007964,
+  "transferred_optimizer_moments": true
+}
