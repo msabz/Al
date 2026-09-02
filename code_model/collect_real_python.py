@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Collect real prompt->Python examples from permissively licensed public repositories.
 
-No synthetic code is generated. Each instruction is an actual docstring and each target is
-the exact corresponding function/class source from the checked-out repository revision.
-Dataset files are generated only during CI and are not committed.
+No synthetic code is generated. Each instruction is an actual upstream docstring and each
+training target is the exact corresponding function/class source from a pinned checkout.
+Train and validation repositories are disjoint. Dataset files are generated only during CI.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import argparse
 import ast
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,9 +23,21 @@ TRAIN_REPOS = [
     ("encode/httpx", "BSD-3-Clause"),
     ("pytest-dev/pytest", "MIT"),
     ("fastapi/fastapi", "MIT"),
+    ("django/django", "BSD-3-Clause"),
+    ("sqlalchemy/sqlalchemy", "MIT"),
+    ("numpy/numpy", "BSD-3-Clause"),
+    ("pallets/click", "BSD-3-Clause"),
+    ("Textualize/rich", "MIT"),
+    ("encode/starlette", "BSD-3-Clause"),
+    ("psf/black", "MIT"),
+    ("aio-libs/aiohttp", "Apache-2.0"),
+    ("pypa/pip", "MIT"),
+    ("tornadoweb/tornado", "Apache-2.0"),
 ]
 VALID_REPOS = [
     ("pydantic/pydantic", "MIT"),
+    ("python-attrs/attrs", "MIT"),
+    ("pandas-dev/pandas", "BSD-3-Clause"),
 ]
 
 SKIP_PARTS = {
@@ -47,7 +58,6 @@ def clone(repo: str, dst: Path) -> str:
 
 
 def source_segment(text: str, node: ast.AST) -> str | None:
-    # ast.get_source_segment is robust to decorators and indentation for modern Python.
     try:
         return ast.get_source_segment(text, node)
     except Exception:
@@ -60,7 +70,7 @@ def iter_examples(repo_dir: Path, repo: str, commit: str, license_name: str) -> 
         if any(part.lower() in SKIP_PARTS for part in rel.parts):
             continue
         try:
-            if path.stat().st_size > 300_000:
+            if path.stat().st_size > 400_000:
                 continue
             text = path.read_text(encoding="utf-8")
             tree = ast.parse(text)
@@ -74,17 +84,17 @@ def iter_examples(repo_dir: Path, repo: str, commit: str, license_name: str) -> 
             if not doc:
                 continue
             doc = " ".join(doc.split())
-            if not (20 <= len(doc) <= 700):
+            if not (20 <= len(doc) <= 900):
                 continue
             code = source_segment(text, node)
             if not code:
                 continue
             code = code.strip()
-            if not (40 <= len(code) <= 5000):
+            if not (40 <= len(code) <= 6000):
                 continue
-            # Avoid giant generated signatures and likely vendored/minified content.
-            if code.count("\n") > 180:
+            if code.count("\n") > 220:
                 continue
+            digest = hashlib.sha256((doc + "\n" + code).encode()).hexdigest()
             yield {
                 "instruction": doc,
                 "code": code,
@@ -92,7 +102,7 @@ def iter_examples(repo_dir: Path, repo: str, commit: str, license_name: str) -> 
                 "commit": commit,
                 "path": rel.as_posix(),
                 "license": license_name,
-                "sha256": hashlib.sha256((doc + "\n" + code).encode()).hexdigest(),
+                "sha256": digest,
             }
 
 
@@ -124,7 +134,7 @@ def collect_group(repos: list[tuple[str, str]], out_path: Path, max_per_repo: in
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="code_model/data")
-    ap.add_argument("--max-per-repo", type=int, default=1200)
+    ap.add_argument("--max-per-repo", type=int, default=2200)
     args = ap.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -135,15 +145,16 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="rsnn-real-python-") as td:
         work = Path(td)
         train_meta = collect_group(TRAIN_REPOS, out_dir / "train.jsonl", args.max_per_repo, work)
-        valid_meta = collect_group(VALID_REPOS, out_dir / "valid.jsonl", max(400, args.max_per_repo // 2), work)
+        valid_meta = collect_group(VALID_REPOS, out_dir / "valid.jsonl", max(1200, args.max_per_repo // 2), work)
 
-    if train_meta["examples"] < 500:
+    if train_meta["examples"] < 5000:
         raise RuntimeError(f"Too few real training examples: {train_meta['examples']}")
-    if valid_meta["examples"] < 100:
+    if valid_meta["examples"] < 1000:
         raise RuntimeError(f"Too few real validation examples: {valid_meta['examples']}")
 
     meta = {
         "policy": "real-source-only: actual upstream docstrings paired with exact source code; no synthetic examples",
+        "split_policy": "repository-disjoint train/validation",
         "train": train_meta,
         "valid": valid_meta,
     }
