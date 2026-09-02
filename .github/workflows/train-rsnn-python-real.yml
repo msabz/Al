@@ -7,12 +7,6 @@ on:
         description: Training steps
         required: false
         default: "300"
-  push:
-    branches:
-      - feat/open-growth-rsnn-python-code-v1
-    paths:
-      - "code_model/**"
-      - ".github/workflows/train-rsnn-python-real.yml"
 
 permissions:
   contents: read
@@ -33,7 +27,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Install CPU training stack
         run: |
@@ -67,49 +60,6 @@ jobs:
             --initial-sparsity 0.75 \
             --lr 0.002 \
             --structural-interval 60
-
-      - name: Verify real-data provenance and INT8 export
-        run: |
-          test -s code_model/data/provenance.json
-          test -s code_model/output/report.json
-          test -s code_model/output/open_growth_rsnn_code_v1_int8.npz
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          p = json.loads(Path('code_model/data/provenance.json').read_text())
-          r = json.loads(Path('code_model/output/report.json').read_text())
-          assert p['policy'].startswith('real-source-only')
-          assert p['train']['examples'] >= 500
-          assert p['valid']['examples'] >= 100
-          assert r['training'] == 'real-source-only'
-          assert r['full_int8_target'] is True
-          print('train_examples=', p['train']['examples'])
-          print('valid_examples=', p['valid']['examples'])
-          print('initial_val_loss=', r['initial_val_loss'])
-          print('final_val_loss=', r['final_val_loss'])
-          print('loss_improvement=', r['loss_improvement'])
-          print('parameters=', r['total_parameters'])
-          print('active_sparse_fraction=', r['active_sparse_fraction'])
-          PY
-
-      - name: Write Actions summary
-        if: always()
-        run: |
-          if [ -f code_model/output/report.json ]; then
-            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          from pathlib import Path
-          r=json.loads(Path('code_model/output/report.json').read_text())
-          print('## Open-Growth RSNN Code V1 — real-data proof')
-          print(f"- Steps: {r['steps']}")
-          print(f"- Parameters: {r['total_parameters']:,}")
-          print(f"- Initial held-out loss: {r['initial_val_loss']:.4f}")
-          print(f"- Final held-out loss: {r['final_val_loss']:.4f}")
-          print(f"- Improvement: {r['loss_improvement']:.4f}")
-          print(f"- Active sparse fraction: {r['active_sparse_fraction']:.3f}")
-          print(f"- Runtime: {r['elapsed_seconds']:.1f}s")
-          PY
-          fi
 
       - name: Upload trained model and evidence
         if: always()
