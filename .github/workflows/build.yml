@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main", "master" ]
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,6 +23,32 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download exact trained Open-Growth checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: seven-hour-stage1-open_growth
+          path: seed-artifact
+          repository: msabz/Al
+          run-id: 33473214556
+          github-token: ${{ github.token }}
+
+      - name: Export trained checkpoint into Android asset
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          CHECKPOINT="$(find seed-artifact -type f -name checkpoint.pt -print -quit)"
+          test -n "$CHECKPOINT"
+          python scripts/export_open_growth_phone_seed.py \
+            --checkpoint "$CHECKPOINT" \
+            --output app/src/main/assets/open_growth_stage1_phone.b64
+          test -s app/src/main/assets/open_growth_stage1_phone.b64
+
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -31,5 +61,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: EquationSolver-APK
+          name: EquationSolver-OldUI-Trained-OpenGrowth-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
