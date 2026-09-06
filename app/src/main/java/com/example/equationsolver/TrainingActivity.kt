@@ -323,7 +323,7 @@ class TrainingActivity : AppCompatActivity() {
                         e is InterruptedException ->
                             "تم إيقاف تدريب الملف، لكن تعذر حفظ آخر Checkpoint: ${checkpointError?.message ?: "خطأ تخزين غير معروف"}"
                         checkpointError != null ->
-                            "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}. كما تعذر حفظ آخر Checkpoint: ${checkpointError?.message ?: "خطأ تخزين غير معروف"}"
+                            "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}. كما تعذر حفظ آخر Checkpoint: ${checkpointError.message ?: "خطأ تخزين غير معروف"}"
                         else -> "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
                     }
                 }
