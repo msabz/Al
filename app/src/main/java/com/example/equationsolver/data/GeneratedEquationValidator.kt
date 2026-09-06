@@ -13,8 +13,9 @@ object GeneratedEquationValidator {
             if (example.equation.contains(';')) validateSystem(example)
             else {
                 val (left, right) = MathExpressionEvaluator.sides(example.equation, example.x, example.y)
+                val difference = left - right
                 val scale = 1.0 + abs(left) + abs(right)
-                abs(left - right) <= EPS * scale
+                difference.isFinite() && scale.isFinite() && abs(difference) <= EPS * scale
             }
         } catch (_: Exception) { false }
     }
@@ -26,8 +27,11 @@ object GeneratedEquationValidator {
     }
 
     private fun satisfies(p: UniversalEquationSolver.Polynomial, x: Double, y: Double): Boolean {
-        val value = p.x2 * x * x + p.x * x + p.y * y + p.c
-        val scale = 1.0 + abs(p.x2 * x * x) + abs(p.x * x) + abs(p.y * y) + abs(p.c)
-        return abs(value) <= EPS * scale
+        val x2Term = p.x2 * x * x
+        val xTerm = p.x * x
+        val yTerm = p.y * y
+        val value = x2Term + xTerm + yTerm + p.c
+        val scale = 1.0 + abs(x2Term) + abs(xTerm) + abs(yTerm) + abs(p.c)
+        return value.isFinite() && scale.isFinite() && abs(value) <= EPS * scale
     }
 }
