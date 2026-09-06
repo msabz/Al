@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 
 class TrainingService : Service() {
@@ -50,11 +51,15 @@ class TrainingService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
+    private var shutdownJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
-    /** Invalidates an older asynchronous STOP when a newer START/STOP command arrives. */
+    /** START/restore increments this; an older shutdown cannot stop a newer generation. */
     @Volatile
     private var lifecycleGeneration = 0L
+
+    @Volatile
+    private var latestStopStartId = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -67,12 +72,11 @@ class TrainingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
-                val generation = nextGeneration()
-                stopTrainingAndSelf(generation, startId)
+                requestStop(startId)
                 START_NOT_STICKY
             }
             ACTION_START -> {
-                nextGeneration()
+                beginStartGeneration()
                 ModelManager.setTrainingEnabled(applicationContext, true)
                 acquireWakeLock()
                 startTrainingIfNeeded()
@@ -84,21 +88,19 @@ class TrainingService : Service() {
     }
 
     private fun restoreOrStop(startId: Int): Int {
-        nextGeneration()
         return if (ModelManager.isTrainingEnabled(applicationContext)) {
+            beginStartGeneration()
             acquireWakeLock()
             startTrainingIfNeeded()
             START_STICKY
         } else {
-            releaseWakeLock()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
+            requestStop(startId)
             START_NOT_STICKY
         }
     }
 
     @Synchronized
-    private fun nextGeneration(): Long {
+    private fun beginStartGeneration(): Long {
         lifecycleGeneration++
         return lifecycleGeneration
     }
@@ -150,19 +152,24 @@ class TrainingService : Service() {
         }
     }
 
-    private fun stopTrainingAndSelf(generation: Long, startId: Int) {
+    private fun requestStop(startId: Int) {
         ModelManager.setTrainingEnabled(applicationContext, false)
+        val generation = lifecycleGeneration
+        latestStopStartId = startId
         val activeJob = job
         job = null
-        scope.launch {
+        val previousShutdown = shutdownJob
+
+        shutdownJob = scope.launch {
+            // A repeated STOP or a STOP after a quick restart must never overtake an
+            // older cancellation that is still writing its final checkpoint.
+            previousShutdown?.join()
             activeJob?.cancelAndJoin()
-            // A newer START must win. The older STOP must not release its wake lock or
-            // stop the service after a replacement training job has already started.
             if (generation != lifecycleGeneration || ModelManager.isTrainingEnabled(applicationContext)) return@launch
             sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelfResult(startId)
+            stopSelfResult(latestStopStartId)
         }
     }
 
@@ -210,7 +217,7 @@ class TrainingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        nextGeneration()
+        beginStartGeneration()
         job?.cancel()
         releaseWakeLock()
         scope.cancel()
