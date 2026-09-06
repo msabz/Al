@@ -32,6 +32,22 @@ class UniversalEquationSolverTest {
         assertTrue(result.steps.any { it.contains("16") })
     }
 
+    @Test fun stableQuadraticFormulaPreservesSmallRoot() {
+        val result = UniversalEquationSolver.solve("x^2+10000000000000000x+1=0")
+        assertEquals(-1.0e-16, result.x!!, 1e-30)
+        assertTrue(result.summary.contains("-1e-16"))
+    }
+
+    @Test fun decimalCancellationDoesNotCreatePhantomVariable() {
+        val sameSide = UniversalEquationSolver.solve("0.3x-0.1x-0.2x=0")
+        assertNull(sameSide.x)
+        assertTrue(sameSide.summary.contains("عدد لا نهائي"))
+
+        val acrossEquals = UniversalEquationSolver.solve("0.1x+0.2x=0.3x")
+        assertNull(acrossEquals.x)
+        assertTrue(acrossEquals.summary.contains("عدد لا نهائي"))
+    }
+
     @Test fun tinyNonZeroLinearCoefficientIsNotTreatedAsZero() {
         val result = UniversalEquationSolver.solve("0.000000000001x=1")
         assertEquals(1.0e12, result.x!!, 1.0)
