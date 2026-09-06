@@ -55,21 +55,22 @@ object ModelManager {
 
     fun trainWithTarget(input: String, x: Double, y: Double, repeats: Int, learningRate: Double): TrainingDelta {
         require(x.isFinite() && y.isFinite()) { "قيم التدريب يجب أن تكون أرقامًا محدودة" }
+        require(repeats > 0) { "عدد تكرارات التدريب يجب أن يكون موجبًا" }
+        require(learningRate.isFinite() && learningRate > 0.0) { "معدل التعلم يجب أن يكون عددًا موجبًا ومحدودًا" }
         val encoding = MathTokenizer.encode(input)
         require(!encoding.truncated) { "المعادلة أطول من حد النموذج (${MathTokenizer.MAX_TOKENS} token)" }
         require(encoding.unknownCount == 0) { "المعادلة تحتوي رموزًا لا يعرفها النموذج" }
         val tokens = encoding.tokens
         val target = doubleArrayOf(x / OUTPUT_SCALE, y / OUTPUT_SCALE)
         val before = nn.predict(tokens)
-        val count = repeats.coerceAtLeast(1)
-        repeat(count) { nn.train(tokens, target, learningRate) }
+        repeat(repeats) { nn.train(tokens, target, learningRate) }
         val after = nn.predict(tokens)
         return TrainingDelta(
             before = before.map { it * OUTPUT_SCALE }.toDoubleArray(),
             after = after.map { it * OUTPUT_SCALE }.toDoubleArray(),
             meanAbsoluteErrorBefore = meanAbsoluteError(before, target) * OUTPUT_SCALE,
             meanAbsoluteErrorAfter = meanAbsoluteError(after, target) * OUTPUT_SCALE,
-            optimizerSteps = count
+            optimizerSteps = repeats
         )
     }
 
@@ -84,6 +85,10 @@ object ModelManager {
         validationAccuracy: Double? = null
     ) {
         if (!::nn.isInitialized) return
+        require(samples == null || samples >= 0L) { "عداد عينات التدريب غير صالح" }
+        require(batches == null || batches >= 0L) { "عداد دفعات التدريب غير صالح" }
+        require(validationAccuracy == null || !validationAccuracy.isFinite() || validationAccuracy in 0.0..1.0) { "نسبة دقة التحقق غير صالحة" }
+
         val app = context.applicationContext
         val target = app.getFileStreamPath(MODEL_FILE)
         val temp = app.getFileStreamPath("$MODEL_FILE.tmp")
@@ -120,28 +125,52 @@ object ModelManager {
         val edit = p.edit()
         if (samples != null) edit.putLong(KEY_SAMPLES, samples)
         if (batches != null) edit.putLong(KEY_BATCHES, batches)
-        if (bestValidationMse != null && bestValidationMse.isFinite()) edit.putFloat(KEY_BEST_VAL, bestValidationMse.toFloat())
-        if (lastLoss != null && lastLoss.isFinite()) edit.putFloat(KEY_LAST_LOSS, lastLoss.toFloat())
-        if (lastValidationMse != null && lastValidationMse.isFinite()) edit.putFloat(KEY_LAST_VAL, lastValidationMse.toFloat())
-        if (validationAccuracy != null && validationAccuracy.isFinite()) edit.putFloat(KEY_VAL_ACCURACY, validationAccuracy.toFloat())
+        if (bestValidationMse != null && bestValidationMse.isFinite() && bestValidationMse >= 0.0) edit.putFloat(KEY_BEST_VAL, bestValidationMse.toFloat())
+        if (lastLoss != null && lastLoss.isFinite() && lastLoss >= 0.0) edit.putFloat(KEY_LAST_LOSS, lastLoss.toFloat())
+        if (lastValidationMse != null && lastValidationMse.isFinite() && lastValidationMse >= 0.0) edit.putFloat(KEY_LAST_VAL, lastValidationMse.toFloat())
+        if (validationAccuracy != null && validationAccuracy.isFinite() && validationAccuracy in 0.0..1.0) edit.putFloat(KEY_VAL_ACCURACY, validationAccuracy.toFloat())
         edit.putLong(KEY_CHECKPOINT_TIME, System.currentTimeMillis())
-        edit.commit()
+        check(edit.commit()) { "تعذر حفظ بيانات الـCheckpoint الوصفية" }
     }
 
     fun setTrainingEnabled(context: Context, enabled: Boolean) {
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_TRAINING_ENABLED, enabled).commit()
+        check(saved) { "تعذر حفظ حالة التدريب" }
     }
 
     fun isTrainingEnabled(context: Context): Boolean =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_TRAINING_ENABLED, false)
 
-    fun trainingSamples(context: Context): Long = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_SAMPLES, 0L)
-    fun trainingBatches(context: Context): Long = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_BATCHES, 0L)
-    fun bestValidationMse(context: Context): Double = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_BEST_VAL, Float.POSITIVE_INFINITY).toDouble()
-    fun lastLoss(context: Context): Double = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_LAST_LOSS, Float.NaN).toDouble()
-    fun lastValidationMse(context: Context): Double = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_LAST_VAL, Float.NaN).toDouble()
-    fun lastValidationAccuracy(context: Context): Double = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_VAL_ACCURACY, Float.NaN).toDouble()
+    fun trainingSamples(context: Context): Long =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_SAMPLES, 0L).coerceAtLeast(0L)
+
+    fun trainingBatches(context: Context): Long =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_BATCHES, 0L).coerceAtLeast(0L)
+
+    fun bestValidationMse(context: Context): Double {
+        val value = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_BEST_VAL, Float.POSITIVE_INFINITY).toDouble()
+        return value.takeIf { it.isFinite() && it >= 0.0 } ?: Double.POSITIVE_INFINITY
+    }
+
+    fun lastLoss(context: Context): Double {
+        val value = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_LAST_LOSS, Float.NaN).toDouble()
+        return value.takeIf { it.isFinite() && it >= 0.0 } ?: Double.NaN
+    }
+
+    fun lastValidationMse(context: Context): Double {
+        val value = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_LAST_VAL, Float.NaN).toDouble()
+        return value.takeIf { it.isFinite() && it >= 0.0 } ?: Double.NaN
+    }
+
+    fun lastValidationAccuracy(context: Context): Double {
+        val value = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_VAL_ACCURACY, Float.NaN).toDouble()
+        return value.takeIf { it.isFinite() && it in 0.0..1.0 } ?: Double.NaN
+    }
 
     fun modelInfo(context: Context): ModelInfo {
         val app = context.applicationContext
@@ -151,7 +180,7 @@ object ModelManager {
             parameterCount = nn.parameterCount(),
             optimizerStep = nn.optimizerStep(),
             checkpointBytes = checkpoint.takeIf { it.exists() }?.length() ?: 0L,
-            checkpointSavedAt = prefs.getLong(KEY_CHECKPOINT_TIME, 0L),
+            checkpointSavedAt = prefs.getLong(KEY_CHECKPOINT_TIME, 0L).coerceAtLeast(0L),
             hasRecoveryBackup = app.getFileStreamPath("$MODEL_FILE.bak").exists()
         )
     }
@@ -188,6 +217,7 @@ object ModelManager {
     }
 
     private fun meanAbsoluteError(prediction: DoubleArray, target: DoubleArray): Double {
+        require(target.isNotEmpty()) { "هدف التدريب فارغ" }
         var total = 0.0
         for (i in target.indices) total += abs(prediction.getOrElse(i) { 0.0 } - target[i])
         return total / target.size
