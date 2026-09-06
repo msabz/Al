@@ -25,10 +25,11 @@ class UniversalEquationSolverTest {
         assertEquals(2.0, result.y!!, 1e-9)
     }
 
-    @Test fun quadraticUsesDeterministicCanonicalRoot() {
+    @Test fun quadraticUsesDeterministicCanonicalRootAndOriginalDiscriminant() {
         val result = UniversalEquationSolver.solve("x^2-4=0")
         assertTrue(result.summary.contains("2"))
         assertEquals(-2.0, result.x!!, 1e-9)
+        assertTrue(result.steps.any { it.contains("16") })
     }
 
     @Test fun tinyNonZeroLinearCoefficientIsNotTreatedAsZero() {
