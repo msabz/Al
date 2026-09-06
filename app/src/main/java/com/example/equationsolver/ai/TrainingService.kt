@@ -44,13 +44,22 @@ class TrainingService : Service() {
         const val EXTRA_FAMILY = "family"
         const val EXTRA_GRADIENT_NORM = "gradient_norm"
         const val EXTRA_REASON = "reason"
+        const val EXTRA_CHECKPOINT_SAVED = "checkpoint_saved"
         private const val CHANNEL_ID = "continuous_training"
         private const val NOTIFICATION_ID = 2201
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
+    private var shutdownJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /** START/restore increments this; an older shutdown cannot stop a newer generation. */
+    @Volatile
+    private var lifecycleGeneration = 0L
+
+    @Volatile
+    private var latestStopStartId = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -63,27 +72,37 @@ class TrainingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
-                stopTrainingAndSelf()
+                requestStop(startId)
                 START_NOT_STICKY
             }
             ACTION_START -> {
+                beginStartGeneration()
                 ModelManager.setTrainingEnabled(applicationContext, true)
+                acquireWakeLock()
                 startTrainingIfNeeded()
                 START_STICKY
             }
-            null -> {
-                if (ModelManager.isTrainingEnabled(applicationContext)) {
-                    startTrainingIfNeeded()
-                    START_STICKY
-                } else {
-                    releaseWakeLock()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    START_NOT_STICKY
-                }
-            }
-            else -> START_STICKY
+            null -> restoreOrStop(startId)
+            else -> restoreOrStop(startId)
         }
+    }
+
+    private fun restoreOrStop(startId: Int): Int {
+        return if (ModelManager.isTrainingEnabled(applicationContext)) {
+            beginStartGeneration()
+            acquireWakeLock()
+            startTrainingIfNeeded()
+            START_STICKY
+        } else {
+            requestStop(startId)
+            START_NOT_STICKY
+        }
+    }
+
+    @Synchronized
+    private fun beginStartGeneration(): Long {
+        lifecycleGeneration++
+        return lifecycleGeneration
     }
 
     private fun startTrainingIfNeeded() {
@@ -133,16 +152,30 @@ class TrainingService : Service() {
         }
     }
 
-    private fun stopTrainingAndSelf() {
+    private fun requestStop(startId: Int) {
         ModelManager.setTrainingEnabled(applicationContext, false)
+        val generation = lifecycleGeneration
+        latestStopStartId = startId
         val activeJob = job
         job = null
-        scope.launch {
+        val previousShutdown = shutdownJob
+
+        shutdownJob = scope.launch {
+            // A repeated STOP or a STOP after a quick restart must never overtake an
+            // older cancellation that is still writing its final checkpoint.
+            previousShutdown?.join()
             activeJob?.cancelAndJoin()
-            sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
+            if (generation != lifecycleGeneration || ModelManager.isTrainingEnabled(applicationContext)) return@launch
+
+            val checkpointFailure = TrainingEngine.lastCheckpointFailure()
+            sendBroadcast(
+                Intent(ACTION_STOPPED).setPackage(packageName)
+                    .putExtra(EXTRA_CHECKPOINT_SAVED, checkpointFailure == null)
+                    .putExtra(EXTRA_REASON, checkpointFailure)
+            )
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfResult(latestStopStartId)
         }
     }
 
@@ -190,6 +223,7 @@ class TrainingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        beginStartGeneration()
         job?.cancel()
         releaseWakeLock()
         scope.cancel()

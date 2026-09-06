@@ -13,8 +13,10 @@ object GeneratedEquationValidator {
             if (example.equation.contains(';')) validateSystem(example)
             else {
                 val (left, right) = MathExpressionEvaluator.sides(example.equation, example.x, example.y)
-                val scale = 1.0 + abs(left) + abs(right)
-                abs(left - right) <= EPS * scale
+                val scale = maxOf(1.0, abs(left), abs(right))
+                if (!scale.isFinite()) return false
+                val normalizedResidual = left / scale - right / scale
+                normalizedResidual.isFinite() && abs(normalizedResidual) <= EPS
             }
         } catch (_: Exception) { false }
     }
@@ -26,8 +28,12 @@ object GeneratedEquationValidator {
     }
 
     private fun satisfies(p: UniversalEquationSolver.Polynomial, x: Double, y: Double): Boolean {
-        val value = p.x2 * x * x + p.x * x + p.y * y + p.c
-        val scale = 1.0 + abs(p.x2 * x * x) + abs(p.x * x) + abs(p.y * y) + abs(p.c)
-        return abs(value) <= EPS * scale
+        val x2Term = p.x2 * x * x
+        val xTerm = p.x * x
+        val yTerm = p.y * y
+        if (!x2Term.isFinite() || !xTerm.isFinite() || !yTerm.isFinite() || !p.c.isFinite()) return false
+        val scale = maxOf(1.0, abs(x2Term), abs(xTerm), abs(yTerm), abs(p.c))
+        val normalizedResidual = x2Term / scale + xTerm / scale + yTerm / scale + p.c / scale
+        return normalizedResidual.isFinite() && abs(normalizedResidual) <= EPS
     }
 }

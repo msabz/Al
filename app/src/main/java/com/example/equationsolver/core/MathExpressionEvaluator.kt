@@ -57,37 +57,39 @@ object MathExpressionEvaluator {
         }
 
         private fun parseTerm(): Double {
-            var value = parsePower()
+            var value = parseUnary()
             while (pos < source.length) {
                 when (source[pos]) {
-                    '*' -> { pos++; value *= parsePower() }
+                    '*' -> { pos++; value *= parseUnary() }
                     '/' -> {
                         pos++
-                        val denominator = parsePower()
-                        require(abs(denominator) > 1e-14) { "قسمة على صفر" }
+                        val denominator = parseUnary()
+                        require(denominator != 0.0) { "قسمة على صفر" }
                         value /= denominator
                     }
                     else -> {
-                        if (startsPrimary(source[pos])) value *= parsePower() else return value
+                        if (startsPrimary(source[pos])) value *= parseUnary() else return value
                     }
                 }
             }
             return value
         }
 
-        private fun parsePower(): Double {
-            var value = parseUnary()
-            if (pos < source.length && source[pos] == '^') {
-                pos++
-                value = value.pow(parsePower())
-            }
-            return value
-        }
-
+        /** Unary signs have lower precedence than exponentiation: -2^2 == -(2^2). */
         private fun parseUnary(): Double {
             if (pos < source.length && source[pos] == '+') { pos++; return parseUnary() }
             if (pos < source.length && source[pos] == '-') { pos++; return -parseUnary() }
-            return parsePrimary()
+            return parsePower()
+        }
+
+        /** Power is right-associative and accepts a signed exponent (2^-2). */
+        private fun parsePower(): Double {
+            var value = parsePrimary()
+            if (pos < source.length && source[pos] == '^') {
+                pos++
+                value = value.pow(parseUnary())
+            }
+            return value
         }
 
         private fun parsePrimary(): Double {

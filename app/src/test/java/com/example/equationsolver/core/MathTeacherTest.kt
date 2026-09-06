@@ -17,6 +17,12 @@ class MathTeacherTest {
         assertEquals(1.0, answer.x!!, 1e-4)
     }
 
+    @Test fun numericRootFindingIsInvariantToLargeFiniteEquationScale() {
+        val answer = MathTeacher.solve("10000000000000*(x-0.03)*(x-2)*(x-3)=0")
+        assertNotNull(answer.x)
+        assertEquals(0.03, answer.x!!, 1e-4)
+    }
+
     @Test fun findsSinePrincipalRootNearZero() {
         val answer = MathTeacher.solve("sin(x)=0.47942554")
         assertNotNull(answer.x)

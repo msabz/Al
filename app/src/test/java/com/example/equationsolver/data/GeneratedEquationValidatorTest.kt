@@ -1,7 +1,8 @@
 package com.example.equationsolver.data
 
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
 
@@ -12,6 +13,15 @@ class GeneratedEquationValidatorTest {
             val sample = EquationGenerator.generate(random)
             assertTrue("Invalid ${sample.family}: ${sample.equation} -> (${sample.x}, ${sample.y})", GeneratedEquationValidator.isValid(sample))
         }
+    }
+
+    @Test fun hugeFiniteValuesAreComparedWithoutOverflow() {
+        val huge = "9".repeat(308)
+        val valid = GeneratedExample("$huge=$huge", 0.0, 0.0, "overflow-regression")
+        val invalid = GeneratedExample("$huge=-$huge", 0.0, 0.0, "overflow-regression")
+
+        assertTrue(GeneratedEquationValidator.isValid(valid))
+        assertFalse(GeneratedEquationValidator.isValid(invalid))
     }
 
     @Test fun seededCurriculumIsReproducibleAndCoversMajorFamilies() {

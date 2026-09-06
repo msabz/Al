@@ -8,6 +8,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.nio.ByteBuffer
 import kotlin.random.Random
 
 class NeuralNetworkTest {
@@ -66,6 +67,21 @@ class NeuralNetworkTest {
     }
 
     @Test
+    fun invalidTrainingNumbersAreRejectedBeforeStateMutation() {
+        val network = smallNetwork(seed = 31)
+        val input = intArrayOf(1, 2, 3, 0)
+        val before = network.predict(input)
+
+        expectIllegalArgument { network.train(input, doubleArrayOf(Double.NaN, 0.0), learningRate = 0.001) }
+        expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = Double.NaN) }
+        expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = -0.001) }
+        expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = Double.MAX_VALUE) }
+
+        assertArrayEquals(before, network.predict(input), 0.0)
+        assertEquals(0, network.optimizerStep())
+    }
+
+    @Test
     fun checkpointRestoresWeightsAndAdamStateExactly() {
         val original = smallNetwork(seed = 5)
         val input = intArrayOf(1, 2, 3, 0)
@@ -84,6 +100,21 @@ class NeuralNetworkTest {
         original.train(input, target, learningRate = 0.004)
         restored.train(input, target, learningRate = 0.004)
         assertArrayEquals("Adam moments must resume, not restart", original.predict(input), restored.predict(input), 0.0)
+    }
+
+    @Test
+    fun checkpointWithNonFiniteParameterIsRejected() {
+        val original = smallNetwork(seed = 5)
+        val bytes = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use(original::saveState)
+        }.toByteArray()
+
+        // Header contains 9 Int values for this two-hidden-layer test network.
+        ByteBuffer.wrap(bytes).putDouble(9 * Int.SIZE_BYTES, Double.NaN)
+        val restored = smallNetwork(seed = 999)
+        expectIllegalArgument {
+            DataInputStream(ByteArrayInputStream(bytes)).use(restored::loadState)
+        }
     }
 
     @Test
@@ -108,6 +139,15 @@ class NeuralNetworkTest {
         assertEquals(0.015, result.meanAbsoluteError, 1e-12)
         assertEquals(0.5, result.withinToleranceRatio, 0.0)
         assertEquals(2, result.valueCount)
+    }
+
+    private fun expectIllegalArgument(block: () -> Unit) {
+        try {
+            block()
+            throw AssertionError("Expected IllegalArgumentException")
+        } catch (_: IllegalArgumentException) {
+            // Expected.
+        }
     }
 
     private fun smallNetwork(seed: Int) = NeuralNetwork(

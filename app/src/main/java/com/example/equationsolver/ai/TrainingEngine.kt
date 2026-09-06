@@ -5,6 +5,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import com.example.equationsolver.core.ArabicEquationNormalizer
 import com.example.equationsolver.data.EquationGenerator
 import com.example.equationsolver.data.GeneratedEquationValidator
 import kotlinx.coroutines.currentCoroutineContext
@@ -53,6 +54,12 @@ object TrainingEngine {
         val reason: String = ""
     )
 
+    data class FileTrainingResult(
+        val trainedSamples: Long,
+        val trainedBatches: Long,
+        val completed: Boolean
+    )
+
     private data class ValidationItem(
         val equation: String,
         val tokens: IntArray,
@@ -78,11 +85,16 @@ object TrainingEngine {
     @Volatile
     private var externalFileStopRequested = false
 
+    @Volatile
+    private var checkpointFailure: String? = null
+
     val lastValidationMse: Double get() = lastValidation.normalizedMse
 
     private val validationBank: ValidationBank by lazy { buildValidationBank() }
 
     fun snapshot(): Snapshot = currentSnapshot
+
+    fun lastCheckpointFailure(): String? = checkpointFailure
 
     @Synchronized
     fun beginExternalFileSession(): Boolean {
@@ -106,22 +118,27 @@ object TrainingEngine {
 
     fun isExternalFileStopRequested(): Boolean = externalFileStopRequested
 
-    fun isReservedForValidation(equation: String): Boolean = equation in validationBank.equations
+    fun isReservedForValidation(equation: String): Boolean = validationKey(equation) in validationBank.equations
 
     fun trainRandom(samples: Int, progress: (Int) -> Unit = {}) {
+        require(samples >= 0) { "عدد عينات التدريب لا يمكن أن يكون سالبًا" }
         val inputs = ArrayList<IntArray>(BATCH_SIZE)
         val targets = ArrayList<DoubleArray>(BATCH_SIZE)
         for (i in 1..samples) {
             val sample = EquationGenerator.generate()
-            if (!GeneratedEquationValidator.isValid(sample) || sample.equation in validationBank.equations) continue
-            inputs += MathTokenizer.tokenize(sample.equation)
-            targets += target(sample.x, sample.y)
-            if (inputs.size == BATCH_SIZE || i == samples) {
-                if (inputs.isNotEmpty()) ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.0007)
-                inputs.clear()
-                targets.clear()
+            if (GeneratedEquationValidator.isValid(sample) && !isReservedForValidation(sample.equation)) {
+                inputs += MathTokenizer.tokenize(sample.equation)
+                targets += target(sample.x, sample.y)
+                if (inputs.size == BATCH_SIZE) {
+                    ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.0007)
+                    inputs.clear()
+                    targets.clear()
+                }
             }
             if (i % 500 == 0) progress(i)
+        }
+        if (inputs.isNotEmpty()) {
+            ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.0007)
         }
     }
 
@@ -130,6 +147,7 @@ object TrainingEngine {
         learningRate: Double = 0.0007,
         progress: (Snapshot) -> Unit = {}
     ) {
+        require(learningRate.isFinite() && learningRate > 0.0) { "معدل التعلم يجب أن يكون عددًا موجبًا ومحدودًا" }
         var samples = ModelManager.trainingSamples(context)
         var batches = ModelManager.trainingBatches(context)
         var bestValidation = ModelManager.bestValidationMse(context)
@@ -154,15 +172,16 @@ object TrainingEngine {
                 }
 
                 val sample = EquationGenerator.generate()
-                if (!GeneratedEquationValidator.isValid(sample) || sample.equation in validationBank.equations) continue
+                if (!GeneratedEquationValidator.isValid(sample) || isReservedForValidation(sample.equation)) continue
                 inputs += MathTokenizer.tokenize(sample.equation)
                 targets += target(sample.x, sample.y)
-                samples++
                 lastEquation = sample.equation
                 lastFamily = sample.family
 
                 if (inputs.size == BATCH_SIZE) {
+                    val trainedThisBatch = inputs.size
                     lastLoss = ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), learningRate)
+                    samples += trainedThisBatch
                     batches++
                     inputs.clear()
                     targets.clear()
@@ -190,40 +209,55 @@ object TrainingEngine {
                 }
             }
         } finally {
+            // A partial in-memory batch has not updated the model, so it must not advance
+            // the persisted sample counter. Only successfully trained batches increment it.
             currentSnapshot = snapshotOf(samples, batches, lastLoss, bestValidation, validation, lastEquation, lastFamily)
             try {
                 saveCheckpoint(context, samples, batches, bestValidation, lastLoss, validation)
             } catch (_: Exception) {
-                // Cancellation must still complete even if storage is unavailable.
+                // The failure is retained in checkpointFailure so the service cannot
+                // claim a successful save while still allowing cancellation to finish.
             }
         }
     }
 
-    fun trainFile(examples: List<Pair<String, DoubleArray>>, progress: (Int) -> Unit = {}) {
-        val trainingExamples = examples.filterNot { it.first in validationBank.equations }
-        if (trainingExamples.isEmpty()) return
+    fun trainFile(examples: List<Pair<String, DoubleArray>>, progress: (Int) -> Unit = {}): FileTrainingResult {
+        val trainingExamples = examples.filterNot { isReservedForValidation(it.first) }
+        if (trainingExamples.isEmpty()) return FileTrainingResult(0L, 0L, completed = true)
         val indices = IntArray(trainingExamples.size) { it }
         indices.shuffle()
         val trainCount = trainingExamples.size
+        var trainedSamples = 0L
+        var trainedBatches = 0L
 
         repeat(EPOCHS) { epoch ->
             val inputs = ArrayList<IntArray>(BATCH_SIZE)
             val targets = ArrayList<DoubleArray>(BATCH_SIZE)
             for (position in 0 until trainCount) {
-                if (externalFileStopRequested || Thread.currentThread().isInterrupted) return
+                if (externalFileStopRequested || Thread.currentThread().isInterrupted) {
+                    return FileTrainingResult(trainedSamples, trainedBatches, completed = false)
+                }
                 val pair = trainingExamples[indices[position]]
-                inputs += MathTokenizer.tokenize(pair.first)
+                val encoding = MathTokenizer.encode(pair.first)
+                require(!encoding.truncated && encoding.unknownCount == 0) { "مثال ملف التدريب غير قابل للترميز بالكامل" }
+                inputs += encoding.tokens
                 targets += suppliedTarget(pair.second)
                 if (inputs.size == BATCH_SIZE || position == trainCount - 1) {
+                    val trainedThisBatch = inputs.size
                     ModelManager.nn.trainBatch(inputs.toTypedArray(), targets.toTypedArray(), 0.0007)
+                    trainedSamples += trainedThisBatch
+                    trainedBatches++
                     inputs.clear()
                     targets.clear()
                 }
                 if ((position + 1) % 1_000 == 0) progress(epoch * trainCount + position + 1)
             }
         }
-        if (externalFileStopRequested || Thread.currentThread().isInterrupted) return
+        if (externalFileStopRequested || Thread.currentThread().isInterrupted) {
+            return FileTrainingResult(trainedSamples, trainedBatches, completed = false)
+        }
         lastValidation = evaluateFixedHoldout()
+        return FileTrainingResult(trainedSamples, trainedBatches, completed = true)
     }
 
     fun evaluateFixedHoldout(): ValidationMetrics {
@@ -251,7 +285,8 @@ object TrainingEngine {
         while (items.size < VALIDATION_SET_SIZE && attempts < VALIDATION_SET_SIZE * 20) {
             attempts++
             val sample = EquationGenerator.generate(random)
-            if (!GeneratedEquationValidator.isValid(sample) || !equations.add(sample.equation)) continue
+            val key = validationKey(sample.equation)
+            if (!GeneratedEquationValidator.isValid(sample) || !equations.add(key)) continue
             items += ValidationItem(
                 equation = sample.equation,
                 tokens = MathTokenizer.tokenize(sample.equation),
@@ -262,6 +297,8 @@ object TrainingEngine {
         check(items.size == VALIDATION_SET_SIZE) { "تعذر بناء مجموعة التحقق الثابتة" }
         return ValidationBank(items, equations)
     }
+
+    private fun validationKey(equation: String): String = ArabicEquationNormalizer.normalize(equation).lowercase()
 
     private fun publish(
         samples: Long,
@@ -311,7 +348,7 @@ object TrainingEngine {
             normalizedMse = mse,
             rmse = sqrt(mse) * OUTPUT_SCALE,
             meanAbsoluteError = Double.NaN,
-            withinOneUnitRatio = accuracy,
+            withinOneUnitRatio = accuracy.takeIf { it.isFinite() && it in 0.0..1.0 } ?: Double.NaN,
             valueCount = 0
         ) else ValidationMetrics.EMPTY
     }
@@ -324,15 +361,21 @@ object TrainingEngine {
         lastLoss: Double,
         validation: ValidationMetrics
     ) {
-        ModelManager.save(
-            context = context,
-            samples = samples,
-            batches = batches,
-            bestValidationMse = bestValidation,
-            lastLoss = lastLoss,
-            lastValidationMse = validation.normalizedMse,
-            validationAccuracy = validation.withinOneUnitRatio
-        )
+        try {
+            ModelManager.save(
+                context = context,
+                samples = samples,
+                batches = batches,
+                bestValidationMse = bestValidation,
+                lastLoss = lastLoss,
+                lastValidationMse = validation.normalizedMse,
+                validationAccuracy = validation.withinOneUnitRatio
+            )
+            checkpointFailure = null
+        } catch (e: Exception) {
+            checkpointFailure = e.message ?: "تعذر حفظ الـCheckpoint"
+            throw e
+        }
     }
 
     private fun pauseReason(context: Context): String? {

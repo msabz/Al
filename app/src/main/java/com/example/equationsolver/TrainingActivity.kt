@@ -14,15 +14,14 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.example.equationsolver.ai.ModelManager
 import com.example.equationsolver.ai.MathTokenizer
+import com.example.equationsolver.ai.ModelManager
 import com.example.equationsolver.ai.TrainingEngine
 import com.example.equationsolver.ai.TrainingService
 import com.example.equationsolver.core.MathTeacher
 import com.example.equationsolver.data.GeneratedEquationValidator
 import com.example.equationsolver.data.GeneratedExample
 import java.util.Locale
-import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -63,9 +62,16 @@ class TrainingActivity : AppCompatActivity() {
                     status.text = intent.getStringExtra(TrainingService.EXTRA_REASON) ?: "خطأ تدريب غير معروف"
                 }
                 TrainingService.ACTION_STOPPED -> {
+                    val saved = intent.getBooleanExtra(TrainingService.EXTRA_CHECKPOINT_SAVED, true)
+                    val reason = intent.getStringExtra(TrainingService.EXTRA_REASON)
                     renderStoredState()
-                    stateText.text = "تم الإيقاف والحفظ"
-                    status.text = "أُغلقت خدمة التدريب بعد حفظ الأوزان وحالة Adam."
+                    if (saved) {
+                        stateText.text = "تم الإيقاف والحفظ"
+                        status.text = "أُغلقت خدمة التدريب بعد حفظ الأوزان وحالة Adam."
+                    } else {
+                        stateText.text = "تم الإيقاف — الحفظ غير مكتمل"
+                        status.text = "أُغلقت خدمة التدريب، لكن تعذر حفظ آخر Checkpoint: ${reason ?: "خطأ تخزين غير معروف"}"
+                    }
                 }
             }
             refreshButtons()
@@ -161,7 +167,7 @@ class TrainingActivity : AppCompatActivity() {
         ModelManager.setTrainingEnabled(this, false)
         startService(Intent(this, TrainingService::class.java).setAction(TrainingService.ACTION_STOP))
         stateText.text = "جارٍ الإيقاف والحفظ..."
-        status.text = "لن تُغلق الخدمة قبل كتابة الأوزان وحالة Adam إلى الـCheckpoint."
+        status.text = "لن تُغلق الخدمة قبل محاولة كتابة الأوزان وحالة Adam إلى الـCheckpoint."
         refreshButtons()
     }
 
@@ -247,7 +253,7 @@ class TrainingActivity : AppCompatActivity() {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             var processed = 0L
             var valid = 0L
-            var trainedValid = 0L
+            var trainedSamples = 0L
             var trainedBatches = 0L
             var lastCheckpointAt = android.os.SystemClock.elapsedRealtime()
             val chunk = ArrayList<Pair<String, DoubleArray>>(2_000)
@@ -257,7 +263,7 @@ class TrainingActivity : AppCompatActivity() {
                 val best = if (validation.normalizedMse.isFinite()) min(previousBest, validation.normalizedMse) else previousBest
                 ModelManager.save(
                     context = this@TrainingActivity,
-                    samples = baseSamples + trainedValid,
+                    samples = baseSamples + trainedSamples,
                     batches = baseBatches + trainedBatches,
                     bestValidationMse = best,
                     lastValidationMse = validation.normalizedMse,
@@ -276,12 +282,11 @@ class TrainingActivity : AppCompatActivity() {
                             valid++
                         }
                         if (chunk.size >= 2_000) {
-                            val chunkSize = chunk.size
-                            TrainingEngine.trainFile(chunk)
-                            if (TrainingEngine.isExternalFileStopRequested()) throw InterruptedException("أوقف المستخدم تدريب الملف")
-                            trainedValid += chunkSize
-                            trainedBatches += ceil(chunkSize.toDouble() / TrainingEngine.BATCH_SIZE).toLong() * TrainingEngine.EPOCHS
+                            val result = TrainingEngine.trainFile(chunk)
+                            trainedSamples += result.trainedSamples
+                            trainedBatches += result.trainedBatches
                             chunk.clear()
+                            if (!result.completed) throw InterruptedException("أوقف المستخدم تدريب الملف")
                             val now = android.os.SystemClock.elapsedRealtime()
                             if (now - lastCheckpointAt >= 5L * 60L * 1_000L) {
                                 saveFileCheckpoint()
@@ -292,25 +297,35 @@ class TrainingActivity : AppCompatActivity() {
                     }
                 } ?: error("تعذر فتح الملف")
                 if (chunk.isNotEmpty()) {
-                    val chunkSize = chunk.size
-                    TrainingEngine.trainFile(chunk)
-                    if (!TrainingEngine.isExternalFileStopRequested()) {
-                        trainedValid += chunkSize
-                        trainedBatches += ceil(chunkSize.toDouble() / TrainingEngine.BATCH_SIZE).toLong() * TrainingEngine.EPOCHS
-                    }
+                    val result = TrainingEngine.trainFile(chunk)
+                    trainedSamples += result.trainedSamples
+                    trainedBatches += result.trainedBatches
+                    chunk.clear()
+                    if (!result.completed) throw InterruptedException("أوقف المستخدم تدريب الملف")
                 }
-                if (TrainingEngine.isExternalFileStopRequested()) throw InterruptedException("أوقف المستخدم تدريب الملف")
 
                 saveFileCheckpoint()
                 runOnUiThread {
                     renderStoredState()
-                    status.text = "اكتمل تدريب الملف: ${number(trainedValid)} مدرّب، ${number(processed - valid)} مرفوض. تم حفظ النموذج."
+                    status.text = "اكتمل تدريب الملف: ${number(valid)} مثال مقبول، ${number(trainedSamples)} تمريرة تدريب، ${number(processed - valid)} مرفوض. تم حفظ النموذج."
                 }
             } catch (e: Exception) {
-                try { saveFileCheckpoint() } catch (_: Exception) { }
+                var checkpointError: Exception? = null
+                try {
+                    saveFileCheckpoint()
+                } catch (saveError: Exception) {
+                    checkpointError = saveError
+                }
                 runOnUiThread {
-                    status.text = if (e is InterruptedException) "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedValid)} مثال مكتمل)."
-                    else "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
+                    status.text = when {
+                        e is InterruptedException && checkpointError == null ->
+                            "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedSamples)} تمريرة تدريب مكتملة)."
+                        e is InterruptedException ->
+                            "تم إيقاف تدريب الملف، لكن تعذر حفظ آخر Checkpoint: ${checkpointError?.message ?: "خطأ تخزين غير معروف"}"
+                        checkpointError != null ->
+                            "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}. كما تعذر حفظ آخر Checkpoint: ${checkpointError.message ?: "خطأ تخزين غير معروف"}"
+                        else -> "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
+                    }
                 }
             } finally {
                 fileTraining = false
@@ -328,8 +343,9 @@ class TrainingActivity : AppCompatActivity() {
             val encoding = MathTokenizer.encode(equation)
             if (encoding.truncated || encoding.unknownCount > 0) return null
             val values = if (parts.size == 2 && parts[1].isNotBlank()) {
-                val nums = parts[1].split(',').mapNotNull { it.trim().toDoubleOrNull() }
-                if (nums.isEmpty()) return null
+                val rawValues = parts[1].split(',')
+                if (rawValues.size !in 1..2) return null
+                val nums = rawValues.map { it.trim().toDoubleOrNull() ?: return null }
                 doubleArrayOf(nums[0], nums.getOrElse(1) { 0.0 })
             } else {
                 val answer = MathTeacher.solve(equation)

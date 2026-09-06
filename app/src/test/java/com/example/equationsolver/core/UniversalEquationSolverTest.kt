@@ -1,6 +1,7 @@
 package com.example.equationsolver.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -24,9 +25,55 @@ class UniversalEquationSolverTest {
         assertEquals(2.0, result.y!!, 1e-9)
     }
 
-    @Test fun quadraticUsesDeterministicCanonicalRoot() {
+    @Test fun quadraticUsesDeterministicCanonicalRootAndOriginalDiscriminant() {
         val result = UniversalEquationSolver.solve("x^2-4=0")
         assertTrue(result.summary.contains("2"))
         assertEquals(-2.0, result.x!!, 1e-9)
+        assertTrue(result.steps.any { it.contains("16") })
+    }
+
+    @Test fun stableQuadraticFormulaPreservesSmallRoot() {
+        val result = UniversalEquationSolver.solve("x^2+10000000000000000x+1=0")
+        assertEquals(-1.0e-16, result.x!!, 1e-30)
+        assertTrue(result.summary.contains("-1e-16"))
+    }
+
+    @Test fun decimalCancellationDoesNotCreatePhantomVariable() {
+        val sameSide = UniversalEquationSolver.solve("0.3x-0.1x-0.2x=0")
+        assertNull(sameSide.x)
+        assertTrue(sameSide.summary.contains("عدد لا نهائي"))
+
+        val acrossEquals = UniversalEquationSolver.solve("0.1x+0.2x=0.3x")
+        assertNull(acrossEquals.x)
+        assertTrue(acrossEquals.summary.contains("عدد لا نهائي"))
+    }
+
+    @Test fun tinyNonZeroLinearCoefficientIsNotTreatedAsZero() {
+        val result = UniversalEquationSolver.solve("0.000000000001x=1")
+        assertEquals(1.0e12, result.x!!, 1.0)
+        assertTrue(result.summary.contains("1e12"))
+    }
+
+    @Test fun tinyQuadraticDiscriminantIsComparedRelatively() {
+        val result = UniversalEquationSolver.solve("x^2+0.00000001x=0")
+        assertEquals(0.0, result.x!!, 0.0)
+        assertTrue(result.summary.contains("-1e-8"))
+    }
+
+    @Test fun largeCommonEquationScaleDoesNotOverflowSystemMath() {
+        val result = UniversalEquationSolver.solve(
+            "100000000000000000000x+100000000000000000000y=300000000000000000000;" +
+                "100000000000000000000x-100000000000000000000y=100000000000000000000"
+        )
+        assertEquals(2.0, result.x!!, 1e-9)
+        assertEquals(1.0, result.y!!, 1e-9)
+    }
+
+    @Test fun unsupportedCrossTermReturnsContractErrorInsteadOfThrowing() {
+        val result = UniversalEquationSolver.solve("xy=1")
+        assertEquals("خطأ", result.type)
+        assertFalse(result.exact)
+        assertNull(result.x)
+        assertNull(result.y)
     }
 }

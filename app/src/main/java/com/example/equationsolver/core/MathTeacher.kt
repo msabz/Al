@@ -87,7 +87,7 @@ object MathTeacher {
 
             if (fa != null && abs(fa) < 1e-7) addVerifiedRoot(roots, equation, a, solveY)
 
-            if (fa != null && fb != null && fa * fb < 0.0) {
+            if (fa != null && fb != null && oppositeSigns(fa, fb)) {
                 val root = bisect(equation, a, b, solveY)
                 if (root != null) addRoot(roots, root)
             }
@@ -117,8 +117,11 @@ object MathTeacher {
     private fun safeResidual(equation: String, value: Double, solveY: Boolean): Double? = try {
         val r = if (solveY) MathExpressionEvaluator.residual(equation, y = value)
         else MathExpressionEvaluator.residual(equation, x = value)
-        r.takeIf { it.isFinite() && abs(it) < 1e12 }
+        r.takeIf { it.isFinite() }
     } catch (_: Exception) { null }
+
+    private fun oppositeSigns(a: Double, b: Double): Boolean =
+        (a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0)
 
     private fun bisect(equation: String, left: Double, right: Double, solveY: Boolean): Double? {
         var lo = left
@@ -128,7 +131,7 @@ object MathTeacher {
             val mid = (lo + hi) * 0.5
             val fm = safeResidual(equation, mid, solveY) ?: return null
             if (abs(fm) < 1e-10) return mid
-            if (flo * fm <= 0.0) hi = mid else { lo = mid; flo = fm }
+            if (fm == 0.0 || oppositeSigns(flo, fm)) hi = mid else { lo = mid; flo = fm }
         }
         val root = (lo + hi) * 0.5
         val residual = safeResidual(equation, root, solveY) ?: return null
@@ -144,7 +147,7 @@ object MathTeacher {
             val fp = safeResidual(equation, value + h, solveY) ?: return value
             val fm = safeResidual(equation, value - h, solveY) ?: return value
             val derivative = (fp - fm) / (2.0 * h)
-            if (abs(derivative) < 1e-12) return value
+            if (!derivative.isFinite() || abs(derivative) < 1e-12) return value
             val next = value - f / derivative
             if (!next.isFinite() || next !in -100.0..100.0) return value
             value = next
