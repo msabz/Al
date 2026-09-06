@@ -22,7 +22,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 
 class TrainingService : Service() {
@@ -45,6 +44,7 @@ class TrainingService : Service() {
         const val EXTRA_FAMILY = "family"
         const val EXTRA_GRADIENT_NORM = "gradient_norm"
         const val EXTRA_REASON = "reason"
+        const val EXTRA_CHECKPOINT_SAVED = "checkpoint_saved"
         private const val CHANNEL_ID = "continuous_training"
         private const val NOTIFICATION_ID = 2201
     }
@@ -166,7 +166,13 @@ class TrainingService : Service() {
             previousShutdown?.join()
             activeJob?.cancelAndJoin()
             if (generation != lifecycleGeneration || ModelManager.isTrainingEnabled(applicationContext)) return@launch
-            sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
+
+            val checkpointFailure = TrainingEngine.lastCheckpointFailure()
+            sendBroadcast(
+                Intent(ACTION_STOPPED).setPackage(packageName)
+                    .putExtra(EXTRA_CHECKPOINT_SAVED, checkpointFailure == null)
+                    .putExtra(EXTRA_REASON, checkpointFailure)
+            )
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(latestStopStartId)
