@@ -52,6 +52,10 @@ class TrainingService : Service() {
     private var job: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /** Invalidates an older asynchronous STOP when a newer START/STOP command arrives. */
+    @Volatile
+    private var lifecycleGeneration = 0L
+
     override fun onCreate() {
         super.onCreate()
         ModelManager.init(applicationContext)
@@ -63,27 +67,40 @@ class TrainingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
-                stopTrainingAndSelf()
+                val generation = nextGeneration()
+                stopTrainingAndSelf(generation, startId)
                 START_NOT_STICKY
             }
             ACTION_START -> {
+                nextGeneration()
                 ModelManager.setTrainingEnabled(applicationContext, true)
+                acquireWakeLock()
                 startTrainingIfNeeded()
                 START_STICKY
             }
-            null -> {
-                if (ModelManager.isTrainingEnabled(applicationContext)) {
-                    startTrainingIfNeeded()
-                    START_STICKY
-                } else {
-                    releaseWakeLock()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    START_NOT_STICKY
-                }
-            }
-            else -> START_STICKY
+            null -> restoreOrStop(startId)
+            else -> restoreOrStop(startId)
         }
+    }
+
+    private fun restoreOrStop(startId: Int): Int {
+        nextGeneration()
+        return if (ModelManager.isTrainingEnabled(applicationContext)) {
+            acquireWakeLock()
+            startTrainingIfNeeded()
+            START_STICKY
+        } else {
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            START_NOT_STICKY
+        }
+    }
+
+    @Synchronized
+    private fun nextGeneration(): Long {
+        lifecycleGeneration++
+        return lifecycleGeneration
     }
 
     private fun startTrainingIfNeeded() {
@@ -133,16 +150,19 @@ class TrainingService : Service() {
         }
     }
 
-    private fun stopTrainingAndSelf() {
+    private fun stopTrainingAndSelf(generation: Long, startId: Int) {
         ModelManager.setTrainingEnabled(applicationContext, false)
         val activeJob = job
         job = null
         scope.launch {
             activeJob?.cancelAndJoin()
+            // A newer START must win. The older STOP must not release its wake lock or
+            // stop the service after a replacement training job has already started.
+            if (generation != lifecycleGeneration || ModelManager.isTrainingEnabled(applicationContext)) return@launch
             sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfResult(startId)
         }
     }
 
@@ -190,6 +210,7 @@ class TrainingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        nextGeneration()
         job?.cancel()
         releaseWakeLock()
         scope.cancel()
