@@ -75,6 +75,7 @@ class NeuralNetworkTest {
         expectIllegalArgument { network.train(input, doubleArrayOf(Double.NaN, 0.0), learningRate = 0.001) }
         expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = Double.NaN) }
         expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = -0.001) }
+        expectIllegalArgument { network.train(input, doubleArrayOf(0.1, 0.0), learningRate = Double.MAX_VALUE) }
 
         assertArrayEquals(before, network.predict(input), 0.0)
         assertEquals(0, network.optimizerStep())
