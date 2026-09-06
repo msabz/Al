@@ -15,9 +15,12 @@ class GeneratedEquationValidatorTest {
         }
     }
 
-    @Test fun overflowedResidualCannotPassBecauseInfinityIsComparedToInfinity() {
+    @Test fun hugeFiniteValuesAreComparedWithoutOverflow() {
         val huge = "9".repeat(308)
+        val valid = GeneratedExample("$huge=$huge", 0.0, 0.0, "overflow-regression")
         val invalid = GeneratedExample("$huge=-$huge", 0.0, 0.0, "overflow-regression")
+
+        assertTrue(GeneratedEquationValidator.isValid(valid))
         assertFalse(GeneratedEquationValidator.isValid(invalid))
     }
 
