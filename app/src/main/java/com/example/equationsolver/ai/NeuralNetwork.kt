@@ -67,7 +67,7 @@ class NeuralNetwork(
     @Synchronized
     fun predict(tokens: IntArray): DoubleArray {
         require(tokens.size == maxTokens) { "طول تسلسل الإدخال غير صحيح" }
-        return forwardWithCache(tokens).prediction.copyOf()
+        return forwardPrediction(tokens)
     }
 
     private data class Cache(
@@ -86,6 +86,21 @@ class NeuralNetwork(
             for (d in 0 until embeddingSize) input[base + d] = embeddings[token][d]
         }
         return input
+    }
+
+    /** Inference path: allocates only the current layer output, not backpropagation caches. */
+    private fun forwardPrediction(tokens: IntArray): DoubleArray {
+        var activation = embeddedInput(tokens)
+        for (l in weights.indices) {
+            val next = DoubleArray(biases[l].size)
+            for (j in next.indices) {
+                var sum = biases[l][j]
+                for (i in activation.indices) sum += activation[i] * weights[l][i][j]
+                next[j] = if (l < weights.lastIndex) max(0.0, sum) else sum
+            }
+            activation = next
+        }
+        return activation
     }
 
     private fun forwardWithCache(tokens: IntArray): Cache {
@@ -113,7 +128,9 @@ class NeuralNetwork(
     @Synchronized
     fun trainBatch(inputs: Array<IntArray>, targets: Array<DoubleArray>, learningRate: Double = 0.001): Double {
         require(inputs.isNotEmpty() && inputs.size == targets.size) { "دفعة التدريب غير صحيحة" }
-        require(learningRate.isFinite() && learningRate > 0.0) { "معدل التعلم يجب أن يكون عددًا موجبًا ومحدودًا" }
+        require(learningRate.isFinite() && learningRate > 0.0 && learningRate <= MAX_LEARNING_RATE) {
+            "معدل التعلم يجب أن يكون ضمن (0, $MAX_LEARNING_RATE]"
+        }
         clearGradients()
         var loss = 0.0
 
@@ -263,7 +280,7 @@ class NeuralNetwork(
         for (sample in inputs.indices) {
             require(inputs[sample].size == maxTokens && targets[sample].size == outputSize) { "أبعاد بيانات التحقق غير صحيحة" }
             require(targets[sample].all { it.isFinite() }) { "قيم التحقق يجب أن تكون محدودة" }
-            val prediction = forwardWithCache(inputs[sample]).prediction
+            val prediction = forwardPrediction(inputs[sample])
             require(prediction.all { it.isFinite() }) { "خرج النموذج غير محدود" }
             for (output in prediction.indices) {
                 if (!activeOutputs[sample].getOrElse(output) { false }) continue
@@ -293,7 +310,7 @@ class NeuralNetwork(
         for (i in inputs.indices) {
             require(inputs[i].size == maxTokens && targets[i].size == outputSize) { "أبعاد بيانات التحقق غير صحيحة" }
             require(targets[i].all { it.isFinite() }) { "قيم التحقق يجب أن تكون محدودة" }
-            val prediction = forwardWithCache(inputs[i]).prediction
+            val prediction = forwardPrediction(inputs[i])
             require(prediction.all { it.isFinite() }) { "خرج النموذج غير محدود" }
             for (j in prediction.indices) {
                 val error = prediction[j] - targets[i][j]
@@ -367,5 +384,6 @@ class NeuralNetwork(
     companion object {
         private const val MAGIC = 0x45514E34
         private const val MAX_GRADIENT_NORM = 5.0
+        private const val MAX_LEARNING_RATE = 1.0
     }
 }
