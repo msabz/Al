@@ -85,11 +85,16 @@ object TrainingEngine {
     @Volatile
     private var externalFileStopRequested = false
 
+    @Volatile
+    private var checkpointFailure: String? = null
+
     val lastValidationMse: Double get() = lastValidation.normalizedMse
 
     private val validationBank: ValidationBank by lazy { buildValidationBank() }
 
     fun snapshot(): Snapshot = currentSnapshot
+
+    fun lastCheckpointFailure(): String? = checkpointFailure
 
     @Synchronized
     fun beginExternalFileSession(): Boolean {
@@ -210,7 +215,8 @@ object TrainingEngine {
             try {
                 saveCheckpoint(context, samples, batches, bestValidation, lastLoss, validation)
             } catch (_: Exception) {
-                // Cancellation must still complete even if storage is unavailable.
+                // The failure is retained in checkpointFailure so the service cannot
+                // claim a successful save while still allowing cancellation to finish.
             }
         }
     }
@@ -355,15 +361,21 @@ object TrainingEngine {
         lastLoss: Double,
         validation: ValidationMetrics
     ) {
-        ModelManager.save(
-            context = context,
-            samples = samples,
-            batches = batches,
-            bestValidationMse = bestValidation,
-            lastLoss = lastLoss,
-            lastValidationMse = validation.normalizedMse,
-            validationAccuracy = validation.withinOneUnitRatio
-        )
+        try {
+            ModelManager.save(
+                context = context,
+                samples = samples,
+                batches = batches,
+                bestValidationMse = bestValidation,
+                lastLoss = lastLoss,
+                lastValidationMse = validation.normalizedMse,
+                validationAccuracy = validation.withinOneUnitRatio
+            )
+            checkpointFailure = null
+        } catch (e: Exception) {
+            checkpointFailure = e.message ?: "تعذر حفظ الـCheckpoint"
+            throw e
+        }
     }
 
     private fun pauseReason(context: Context): String? {
