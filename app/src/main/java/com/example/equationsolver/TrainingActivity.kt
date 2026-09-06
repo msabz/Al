@@ -62,9 +62,16 @@ class TrainingActivity : AppCompatActivity() {
                     status.text = intent.getStringExtra(TrainingService.EXTRA_REASON) ?: "خطأ تدريب غير معروف"
                 }
                 TrainingService.ACTION_STOPPED -> {
+                    val saved = intent.getBooleanExtra(TrainingService.EXTRA_CHECKPOINT_SAVED, true)
+                    val reason = intent.getStringExtra(TrainingService.EXTRA_REASON)
                     renderStoredState()
-                    stateText.text = "تم الإيقاف والحفظ"
-                    status.text = "أُغلقت خدمة التدريب بعد حفظ الأوزان وحالة Adam."
+                    if (saved) {
+                        stateText.text = "تم الإيقاف والحفظ"
+                        status.text = "أُغلقت خدمة التدريب بعد حفظ الأوزان وحالة Adam."
+                    } else {
+                        stateText.text = "تم الإيقاف — الحفظ غير مكتمل"
+                        status.text = "أُغلقت خدمة التدريب، لكن تعذر حفظ آخر Checkpoint: ${reason ?: "خطأ تخزين غير معروف"}"
+                    }
                 }
             }
             refreshButtons()
@@ -160,7 +167,7 @@ class TrainingActivity : AppCompatActivity() {
         ModelManager.setTrainingEnabled(this, false)
         startService(Intent(this, TrainingService::class.java).setAction(TrainingService.ACTION_STOP))
         stateText.text = "جارٍ الإيقاف والحفظ..."
-        status.text = "لن تُغلق الخدمة قبل كتابة الأوزان وحالة Adam إلى الـCheckpoint."
+        status.text = "لن تُغلق الخدمة قبل محاولة كتابة الأوزان وحالة Adam إلى الـCheckpoint."
         refreshButtons()
     }
 
@@ -303,10 +310,22 @@ class TrainingActivity : AppCompatActivity() {
                     status.text = "اكتمل تدريب الملف: ${number(valid)} مثال مقبول، ${number(trainedSamples)} تمريرة تدريب، ${number(processed - valid)} مرفوض. تم حفظ النموذج."
                 }
             } catch (e: Exception) {
-                try { saveFileCheckpoint() } catch (_: Exception) { }
+                var checkpointError: Exception? = null
+                try {
+                    saveFileCheckpoint()
+                } catch (saveError: Exception) {
+                    checkpointError = saveError
+                }
                 runOnUiThread {
-                    status.text = if (e is InterruptedException) "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedSamples)} تمريرة تدريب مكتملة)."
-                    else "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
+                    status.text = when {
+                        e is InterruptedException && checkpointError == null ->
+                            "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedSamples)} تمريرة تدريب مكتملة)."
+                        e is InterruptedException ->
+                            "تم إيقاف تدريب الملف، لكن تعذر حفظ آخر Checkpoint: ${checkpointError?.message ?: "خطأ تخزين غير معروف"}"
+                        checkpointError != null ->
+                            "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}. كما تعذر حفظ آخر Checkpoint: ${checkpointError?.message ?: "خطأ تخزين غير معروف"}"
+                        else -> "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
+                    }
                 }
             } finally {
                 fileTraining = false
@@ -324,8 +343,9 @@ class TrainingActivity : AppCompatActivity() {
             val encoding = MathTokenizer.encode(equation)
             if (encoding.truncated || encoding.unknownCount > 0) return null
             val values = if (parts.size == 2 && parts[1].isNotBlank()) {
-                val nums = parts[1].split(',').mapNotNull { it.trim().toDoubleOrNull() }
-                if (nums.isEmpty()) return null
+                val rawValues = parts[1].split(',')
+                if (rawValues.size !in 1..2) return null
+                val nums = rawValues.map { it.trim().toDoubleOrNull() ?: return null }
                 doubleArrayOf(nums[0], nums.getOrElse(1) { 0.0 })
             } else {
                 val answer = MathTeacher.solve(equation)
