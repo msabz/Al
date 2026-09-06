@@ -13,9 +13,10 @@ object GeneratedEquationValidator {
             if (example.equation.contains(';')) validateSystem(example)
             else {
                 val (left, right) = MathExpressionEvaluator.sides(example.equation, example.x, example.y)
-                val difference = left - right
-                val scale = 1.0 + abs(left) + abs(right)
-                difference.isFinite() && scale.isFinite() && abs(difference) <= EPS * scale
+                val scale = maxOf(1.0, abs(left), abs(right))
+                if (!scale.isFinite()) return false
+                val normalizedResidual = left / scale - right / scale
+                normalizedResidual.isFinite() && abs(normalizedResidual) <= EPS
             }
         } catch (_: Exception) { false }
     }
@@ -30,8 +31,9 @@ object GeneratedEquationValidator {
         val x2Term = p.x2 * x * x
         val xTerm = p.x * x
         val yTerm = p.y * y
-        val value = x2Term + xTerm + yTerm + p.c
-        val scale = 1.0 + abs(x2Term) + abs(xTerm) + abs(yTerm) + abs(p.c)
-        return value.isFinite() && scale.isFinite() && abs(value) <= EPS * scale
+        if (!x2Term.isFinite() || !xTerm.isFinite() || !yTerm.isFinite() || !p.c.isFinite()) return false
+        val scale = maxOf(1.0, abs(x2Term), abs(xTerm), abs(yTerm), abs(p.c))
+        val normalizedResidual = x2Term / scale + xTerm / scale + yTerm / scale + p.c / scale
+        return normalizedResidual.isFinite() && abs(normalizedResidual) <= EPS
     }
 }
