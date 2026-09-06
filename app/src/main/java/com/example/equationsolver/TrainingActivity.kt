@@ -14,15 +14,14 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.example.equationsolver.ai.ModelManager
 import com.example.equationsolver.ai.MathTokenizer
+import com.example.equationsolver.ai.ModelManager
 import com.example.equationsolver.ai.TrainingEngine
 import com.example.equationsolver.ai.TrainingService
 import com.example.equationsolver.core.MathTeacher
 import com.example.equationsolver.data.GeneratedEquationValidator
 import com.example.equationsolver.data.GeneratedExample
 import java.util.Locale
-import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -247,7 +246,7 @@ class TrainingActivity : AppCompatActivity() {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             var processed = 0L
             var valid = 0L
-            var trainedValid = 0L
+            var trainedSamples = 0L
             var trainedBatches = 0L
             var lastCheckpointAt = android.os.SystemClock.elapsedRealtime()
             val chunk = ArrayList<Pair<String, DoubleArray>>(2_000)
@@ -257,7 +256,7 @@ class TrainingActivity : AppCompatActivity() {
                 val best = if (validation.normalizedMse.isFinite()) min(previousBest, validation.normalizedMse) else previousBest
                 ModelManager.save(
                     context = this@TrainingActivity,
-                    samples = baseSamples + trainedValid,
+                    samples = baseSamples + trainedSamples,
                     batches = baseBatches + trainedBatches,
                     bestValidationMse = best,
                     lastValidationMse = validation.normalizedMse,
@@ -276,12 +275,11 @@ class TrainingActivity : AppCompatActivity() {
                             valid++
                         }
                         if (chunk.size >= 2_000) {
-                            val chunkSize = chunk.size
-                            TrainingEngine.trainFile(chunk)
-                            if (TrainingEngine.isExternalFileStopRequested()) throw InterruptedException("أوقف المستخدم تدريب الملف")
-                            trainedValid += chunkSize
-                            trainedBatches += ceil(chunkSize.toDouble() / TrainingEngine.BATCH_SIZE).toLong() * TrainingEngine.EPOCHS
+                            val result = TrainingEngine.trainFile(chunk)
+                            trainedSamples += result.trainedSamples
+                            trainedBatches += result.trainedBatches
                             chunk.clear()
+                            if (!result.completed) throw InterruptedException("أوقف المستخدم تدريب الملف")
                             val now = android.os.SystemClock.elapsedRealtime()
                             if (now - lastCheckpointAt >= 5L * 60L * 1_000L) {
                                 saveFileCheckpoint()
@@ -292,24 +290,22 @@ class TrainingActivity : AppCompatActivity() {
                     }
                 } ?: error("تعذر فتح الملف")
                 if (chunk.isNotEmpty()) {
-                    val chunkSize = chunk.size
-                    TrainingEngine.trainFile(chunk)
-                    if (!TrainingEngine.isExternalFileStopRequested()) {
-                        trainedValid += chunkSize
-                        trainedBatches += ceil(chunkSize.toDouble() / TrainingEngine.BATCH_SIZE).toLong() * TrainingEngine.EPOCHS
-                    }
+                    val result = TrainingEngine.trainFile(chunk)
+                    trainedSamples += result.trainedSamples
+                    trainedBatches += result.trainedBatches
+                    chunk.clear()
+                    if (!result.completed) throw InterruptedException("أوقف المستخدم تدريب الملف")
                 }
-                if (TrainingEngine.isExternalFileStopRequested()) throw InterruptedException("أوقف المستخدم تدريب الملف")
 
                 saveFileCheckpoint()
                 runOnUiThread {
                     renderStoredState()
-                    status.text = "اكتمل تدريب الملف: ${number(trainedValid)} مدرّب، ${number(processed - valid)} مرفوض. تم حفظ النموذج."
+                    status.text = "اكتمل تدريب الملف: ${number(valid)} مثال مقبول، ${number(trainedSamples)} تمريرة تدريب، ${number(processed - valid)} مرفوض. تم حفظ النموذج."
                 }
             } catch (e: Exception) {
                 try { saveFileCheckpoint() } catch (_: Exception) { }
                 runOnUiThread {
-                    status.text = if (e is InterruptedException) "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedValid)} مثال مكتمل)."
+                    status.text = if (e is InterruptedException) "تم إيقاف تدريب الملف وحفظ الأوزان الحالية (${number(trainedSamples)} تمريرة تدريب مكتملة)."
                     else "فشل تدريب الملف: ${e.message ?: "خطأ غير معروف"}"
                 }
             } finally {
