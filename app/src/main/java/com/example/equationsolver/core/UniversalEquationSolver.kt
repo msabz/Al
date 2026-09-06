@@ -106,9 +106,13 @@ object UniversalEquationSolver {
                     ), x = root)
                 }
             }
+
+            // Stable quadratic formula: using q avoids catastrophic cancellation in the
+            // small root when |b| is much larger than |a| and |c|.
             val s = sqrt(d)
-            val r1 = (-qb + s) / (2.0 * qa)
-            val r2 = (-qb - s) / (2.0 * qa)
+            val q = -0.5 * (qb + Math.copySign(s, qb))
+            val r1 = q / qa
+            val r2 = qc / q
             if (!r1.isFinite() || !r2.isFinite()) return nonFiniteSolution()
             val canonical = listOf(r1, r2).minWithOrNull(compareBy<Double> { abs(it) }.thenBy { it }) ?: r1
             return Result("تربيعية", "x = ${fmt(r1)} أو x = ${fmt(r2)}", listOf(
@@ -196,7 +200,12 @@ object UniversalEquationSolver {
         val parts = equation.split('=')
         val left = parsePolynomial(parts[0])
         val right = parsePolynomial(parts[1])
-        return Polynomial(left.x2 - right.x2, left.x - right.x, left.y - right.y, left.c - right.c)
+        return Polynomial(
+            x2 = cleanCancellation(left.x2 - right.x2, abs(left.x2) + abs(right.x2)),
+            x = cleanCancellation(left.x - right.x, abs(left.x) + abs(right.x)),
+            y = cleanCancellation(left.y - right.y, abs(left.y) + abs(right.y)),
+            c = cleanCancellation(left.c - right.c, abs(left.c) + abs(right.c))
+        )
     }
 
     private fun parsePolynomial(expression: String): Polynomial {
@@ -209,18 +218,48 @@ object UniversalEquationSolver {
         var x = 0.0
         var y = 0.0
         var c = 0.0
+        var x2Magnitude = 0.0
+        var xMagnitude = 0.0
+        var yMagnitude = 0.0
+        var cMagnitude = 0.0
         for (term in terms) {
             require(term.length > 1) { "حد غير صالح: $term" }
             when {
                 term.contains("xy") || term.contains("yx") -> throw IllegalArgumentException("الحدود xy غير مدعومة")
-                term.endsWith("x^2") -> x2 += coefficient(term.removeSuffix("x^2"))
-                term.endsWith("x") -> x += coefficient(term.removeSuffix("x"))
-                term.endsWith("y") -> y += coefficient(term.removeSuffix("y"))
-                else -> c += signedNumber(term)
+                term.endsWith("x^2") -> {
+                    val value = coefficient(term.removeSuffix("x^2"))
+                    x2 += value
+                    x2Magnitude += abs(value)
+                }
+                term.endsWith("x") -> {
+                    val value = coefficient(term.removeSuffix("x"))
+                    x += value
+                    xMagnitude += abs(value)
+                }
+                term.endsWith("y") -> {
+                    val value = coefficient(term.removeSuffix("y"))
+                    y += value
+                    yMagnitude += abs(value)
+                }
+                else -> {
+                    val value = signedNumber(term)
+                    c += value
+                    cMagnitude += abs(value)
+                }
             }
         }
         require(x2.isFinite() && x.isFinite() && y.isFinite() && c.isFinite()) { "معاملات المعادلة غير محدودة" }
-        return Polynomial(x2, x, y, c)
+        return Polynomial(
+            cleanCancellation(x2, x2Magnitude),
+            cleanCancellation(x, xMagnitude),
+            cleanCancellation(y, yMagnitude),
+            cleanCancellation(c, cMagnitude)
+        )
+    }
+
+    private fun cleanCancellation(value: Double, magnitude: Double): Double {
+        if (value == 0.0 || magnitude == 0.0) return 0.0
+        return if (abs(value) <= REL_EPS * magnitude) 0.0 else value
     }
 
     private fun coefficient(raw: String): Double = when (raw) {
