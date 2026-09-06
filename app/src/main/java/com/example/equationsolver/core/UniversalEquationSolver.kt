@@ -10,7 +10,7 @@ import kotlin.math.sqrt
  */
 object UniversalEquationSolver {
     /** Relative tolerance used only for cancellation-sensitive derived quantities. */
-    private const val REL_EPS = 1e-12
+    private const val REL_EPS = 1e-14
 
     data class Polynomial(
         val x2: Double = 0.0,
@@ -91,14 +91,17 @@ object UniversalEquationSolver {
             val d = b2 - fourAc
             val dScale = abs(b2) + abs(fourAc)
             val dTolerance = if (dScale == 0.0) 0.0 else REL_EPS * dScale
+            val originalD = p.x * p.x - 4.0 * p.x2 * p.c
+            val dDescription = if (originalD.isFinite()) fmt(originalD)
+            else "${fmt(d)} (بعد تطبيع المعاملات؛ Δ الأصلي خارج النطاق العددي)"
 
-            if (d < -dTolerance) return Result("تربيعية", "لا يوجد حل حقيقي.", listOf("المميز Δ = ${fmt(d)}", "بما أن Δ < 0 فلا توجد جذور حقيقية."))
+            if (d < -dTolerance) return Result("تربيعية", "لا يوجد حل حقيقي.", listOf("المميز Δ = $dDescription", "بما أن Δ < 0 فلا توجد جذور حقيقية."))
             if (abs(d) <= dTolerance) {
                 val root = -qb / (2.0 * qa)
                 return finiteRootResult(root) {
                     Result("تربيعية", "x = ${fmt(root)}", listOf(
                         "نستخدم الصيغة العامة.",
-                        "Δ = b² − 4ac = 0",
+                        "المميز Δ = $dDescription",
                         "x = −b / 2a = ${fmt(root)}"
                     ), x = root)
                 }
@@ -111,7 +114,7 @@ object UniversalEquationSolver {
             return Result("تربيعية", "x = ${fmt(r1)} أو x = ${fmt(r2)}", listOf(
                 "الصيغة: ax² + bx + c = 0",
                 "a = ${fmt(p.x2)}, b = ${fmt(p.x)}, c = ${fmt(p.c)}",
-                "Δ = ${fmt(d)}",
+                "المميز Δ = $dDescription",
                 "x₁ = ${fmt(r1)}",
                 "x₂ = ${fmt(r2)}"
             ), x = canonical)
@@ -154,9 +157,12 @@ object UniversalEquationSolver {
         val x = (-n1.c * n2.y + n2.c * n1.y) / det
         val y = (-n1.x * n2.c + n2.x * n1.c) / det
         if (!x.isFinite() || !y.isFinite()) return nonFiniteSolution()
+        val originalDet = e1.x * e2.y - e2.x * e1.y
+        val determinantStep = if (originalDet.isFinite()) "نحسب المحدد Δ = ${fmt(originalDet)}."
+        else "نحسب المحدد بعد تطبيع المعاملات Δ' = ${fmt(det)} لأن Δ الأصلي خارج النطاق العددي."
         return Result("نظام خطي", "x = ${fmt(x)}\ny = ${fmt(y)}", listOf(
             "لدينا معادلتان خطيتان.",
-            "نحسب المحدد Δ = ${fmt(det)}.",
+            determinantStep,
             "x = ${fmt(x)}",
             "y = ${fmt(y)}",
             "نراجع بالتعويض للتأكد من الحل."
